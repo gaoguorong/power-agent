@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>国网浙江省电力有限公司 · 电网静态安全分析智能体</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+            background: linear-gradient(135deg, #D4EDDA 0%, #C7EDCC 50%, #B8E0C8 100%);
+            min-height: 100vh;
+            padding: 20px;
+            position: relative;
+        }
+        
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #00843D 0%, #00A651 50%, #00843D 100%);
+            z-index: 999;
+        }
+        
+        .company-footer {
+            text-align: center;
+            padding: 20px;
+            color: #00632B;
+            font-size: 12px;
+            margin-top: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #ffffff 0%, #f0f9f4 100%);
+            border-radius: 16px;
+            padding: 16px 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0, 132, 61, 0.15);
+            border-top: 4px solid #00843D;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .company-logo {
+            width: 190px;
+            height: 62px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .logo-img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        
+        .header-content {
+            flex: 1;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .header-content h1 {
+            color: #00632B;
+            font-size: 24px;
+            margin-bottom: 4px;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .header-content p {
+            color: #4a6741;
+            font-size: 13px;
+            position: relative;
+            z-index: 1;
+            margin-bottom: 6px;
+        }
+        
+        .header::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 250px;
+            height: 100%;
+            background: linear-gradient(90deg, transparent 0%, rgba(0, 132, 61, 0.06) 100%);
+            pointer-events: none;
+        }
+        
+        .header .version {
+            display: inline-block;
+            background: linear-gradient(135deg, #00843D 0%, #00632B 100%);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 350px;
+            gap: 20px;
+        }
+        
+        @media (max-width: 900px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .chat-area {
+            background: rgba(255, 255, 255, 0.97);
+            border-radius: 16px;
+            padding: 20px;
+            min-height: 500px;
+            box-shadow: 0 10px 40px rgba(0, 132, 61, 0.12);
+            display: flex;
+            flex-direction: column;
+            border-top: 4px solid #00843D;
+        }
+        
+        .chat-history {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            max-height: 600px;
+        }
+        
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .message.user {
+            justify-content: flex-end;
+        }
+        
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+        
+        .message.agent .message-avatar {
+            background: linear-gradient(135deg, #00843D 0%, #00632B 100%);
+        }
+        
+        .message.user .message-avatar {
+            background: linear-gradient(135deg, #2d8cf0 0%, #1a73e8 100%);
+        }
+        
+        .message-content {
+            max-width: 80%;
+        }
+        
+        .message-bubble {
+            padding: 15px 20px;
+            border-radius: 16px;
+            margin-bottom: 5px;
+        }
+        
+        .message.agent .message-bubble {
+            background: #f0f9f4;
+            border: 1px solid #c6e6d0;
+            border-top-left-radius: 4px;
+        }
+        
+        .message.user .message-bubble {
+            background: linear-gradient(135deg, #2d8cf0 0%, #1a73e8 100%);
+            color: white;
+            border-top-right-radius: 4px;
+        }
+        
+        .message-meta {
+            font-size: 12px;
+            color: #a0aec0;
+            padding: 0 5px;
+        }
+        
+        .message.user .message-meta {
+            text-align: right;
+        }
+        
+        .answer-card {
+            background: white;
+            border-radius: 12px;
+            padding: 15px;
+            margin-top: 10px;
+            border: 1px solid #c6e6d0;
+            box-shadow: 0 2px 8px rgba(0, 132, 61, 0.05);
+        }
+        
+        .answer-card .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #edf2f7;
+        }
+        
+        .answer-card .card-title {
+            font-weight: 600;
+            color: #2d3748;
+            font-size: 14px;
+        }
+        
+        .badge {
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        
+        .badge.success {
+            background: #c6f6d5;
+            color: #00632B;
+        }
+        
+        .badge.failed {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+        
+        .badge.info {
+            background: #bee3f8;
+            color: #2a4365;
+        }
+        
+        .summary-box {
+            background: #e6f7ee;
+            border-left: 4px solid #00843D;
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-size: 13px;
+            color: #00632B;
+        }
+        
+        .data-section {
+            margin-top: 10px;
+        }
+        
+        .data-section h4 {
+            font-size: 13px;
+            color: #4a5568;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        
+        .data-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 10px;
+        }
+        
+        .data-item {
+            background: #f0f9f4;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+        
+        .data-item .label {
+            color: #718096;
+            margin-bottom: 4px;
+        }
+        
+        .data-item .value {
+            color: #2d3748;
+            font-weight: 600;
+        }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        
+        .data-table th,
+        .data-table td {
+            padding: 8px 10px;
+            text-align: left;
+            border-bottom: 1px solid #edf2f7;
+        }
+        
+        .data-table th {
+            background: #e6f7ee;
+            color: #00632B;
+            font-weight: 600;
+        }
+        
+        .data-table tr:hover {
+            background: #f0f9f4;
+        }
+        
+        .question-input-area {
+            border-top: 1px solid #c6e6d0;
+            padding-top: 20px;
+        }
+        
+        .input-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .grid-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            background: #f7fafc;
+            border-radius: 8px;
+        }
+        
+        .grid-selector label {
+            font-size: 13px;
+            color: #4a5568;
+            font-weight: 500;
+        }
+        
+        .grid-selector select {
+            padding: 6px 10px;
+            border: 1px solid #cbd5e0;
+            border-radius: 6px;
+            background: white;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        
+        .question-input {
+            width: 100%;
+            min-height: 80px;
+            padding: 12px 15px;
+            border: 2px solid #c6e6d0;
+            border-radius: 12px;
+            font-size: 14px;
+            resize: vertical;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        
+        .question-input:focus {
+            outline: none;
+            border-color: #00843D;
+            box-shadow: 0 0 0 3px rgba(0, 132, 61, 0.1);
+        }
+        
+        .submit-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+        }
+        
+        .quick-questions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        
+        .quick-btn {
+            padding: 6px 12px;
+            background: #f0f9f4;
+            border: 1px solid #c6e6d0;
+            border-radius: 20px;
+            font-size: 12px;
+            color: #00632B;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .quick-btn:hover {
+            background: #c6e6d0;
+            border-color: #00843D;
+        }
+        
+        .submit-btn {
+            padding: 10px 30px;
+            background: linear-gradient(135deg, #00843D 0%, #00632B 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 132, 61, 0.4);
+        }
+        
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .sidebar {
+            background: rgba(255, 255, 255, 0.97);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 10px 40px rgba(0, 132, 61, 0.12);
+            border-top: 4px solid #00843D;
+        }
+        
+        .sidebar h3 {
+            color: #00632B;
+            font-size: 16px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #c6e6d0;
+        }
+        
+        .tool-list {
+            list-style: none;
+        }
+        
+        .tool-list li {
+            padding: 10px;
+            background: #f0f9f4;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            font-size: 12px;
+            border-left: 3px solid #00843D;
+        }
+        
+        .tool-list .tool-name {
+            font-weight: 600;
+            color: #2d3748;
+            display: block;
+            margin-bottom: 4px;
+        }
+        
+        .tool-list .tool-desc {
+            color: #718096;
+        }
+        
+        .status-panel {
+            margin-top: 20px;
+            padding: 15px;
+            background: linear-gradient(135deg, #00843D 0%, #004D22 100%);
+            border-radius: 12px;
+            color: white;
+        }
+        
+        .status-panel h4 {
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            margin-bottom: 6px;
+        }
+        
+        .typing-indicator {
+            display: none;
+            padding: 15px 20px;
+            background: #f7fafc;
+            border-radius: 16px;
+            margin-bottom: 20px;
+            width: fit-content;
+        }
+        
+        .typing-indicator.active {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        
+        .typing-indicator span {
+            width: 8px;
+            height: 8px;
+            background: #a0aec0;
+            border-radius: 50%;
+            animation: typing 1.4s infinite;
+        }
+        
+        .typing-indicator span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        
+        .typing-indicator span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+        
+        @keyframes typing {
+            0%, 60%, 100% {
+                transform: translateY(0);
+            }
+            30% {
+                transform: translateY(-10px);
+            }
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6b8f71;
+        }
+        
+        .empty-state .icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+        
+        .empty-state p {
+            font-size: 14px;
+        }
+        
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #c6e6d0;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #00843D;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="company-logo">
+                <img src="assets/浙江电力logo.png" alt="国网浙江省电力有限公司" class="logo-img">
+            </div>
+            <div class="header-content">
+                <h1>⚡ 电网静态安全分析智能体</h1>
+                <p>基于 Pandapower 库的智能电网分析工具，支持潮流计算、N-1校核、短路分析、拓扑/参数查询、排序筛选、风险报告等</p>
+                <span class="version">v1.1.0 · 扩展工具版</span>
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="chat-area">
+                <div class="chat-history" id="chatHistory">
+                    <div class="empty-state" id="emptyState">
+                        <div class="icon">🔌</div>
+                        <p>输入问题开始分析，或点击下方快捷问题</p>
+                    </div>
+                </div>
+                
+                <div class="typing-indicator" id="typingIndicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+                
+                <div class="question-input-area">
+                    <div class="grid-auto-tip" style="background: linear-gradient(135deg, #D4EDDA 0%, #C7EDCC 100%); color: #00632B; padding: 8px 12px; border-radius: 8px; font-size: 12px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #c6e6d0;">
+                        <span>🤖</span>
+                        <span>智能体将根据您的问题自动选择最合适的电网模型</span>
+                    </div>
+                    
+                    <div style="margin-top: 10px;">
+                        <textarea 
+                            class="question-input" 
+                            id="questionInput" 
+                            placeholder="请输入您的问题，智能体将自动选择电网和分析工具..."
+                            rows="3"
+                        ></textarea>
+                    </div>
+                    
+                    <div class="submit-row">
+                        <div class="quick-questions">
+                        <button class="quick-btn" onclick="setQuestion('请进行交流潮流计算')">潮流计算</button>
+                        <button class="quick-btn" onclick="setQuestion('使用IEEE 39节点系统执行N-1静态安全校核')">N-1校核(39节点)</button>
+                        <button class="quick-btn" onclick="setQuestion('分析线路过载情况')">线路过载</button>
+                        <button class="quick-btn" onclick="setQuestion('检查电压越限')">电压越限</button>
+                        <button class="quick-btn" onclick="setQuestion('计算网损')">网损分析</button>
+                        <button class="quick-btn" onclick="setQuestion('执行三相短路计算')">短路计算</button>
+                        <button class="quick-btn" onclick="setQuestion('进行电压稳定性分析')">电压稳定</button>
+                        <button class="quick-btn" onclick="setQuestion('列出case39电网的所有母线和线路')">拓扑查询</button>
+                        <button class="quick-btn" onclick="setQuestion('查询case39中线路1-2的参数')">元件参数</button>
+                        <button class="quick-btn" onclick="setQuestion('负载率最高的5条线路')">线路排序</button>
+                        <button class="quick-btn" onclick="setQuestion('生成case39电网风险报告')">风险报告</button>
+                        <button class="quick-btn" onclick="setQuestion('对case39关键线路逐一做N-1并排序')">复合分析</button>
+                        </div>
+                        <button class="submit-btn" id="submitBtn" onclick="submitQuestion()">提交问题</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="sidebar">
+                <h3>🛠️ 可用分析工具</h3>
+                <ul class="tool-list" id="toolList">
+                    <li>
+                        <span class="tool-name">📊 交流潮流计算</span>
+                        <span class="tool-desc">计算电网稳态运行状态</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">🔍 N-1静态安全校核</span>
+                        <span class="tool-desc">检查单个元件故障后电网安全性</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">⚡ 短路计算分析</span>
+                        <span class="tool-desc">分析三相/两相/单相短路故障</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">📈 电压稳定性分析</span>
+                        <span class="tool-desc">计算电网电压稳定裕度</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">⚠️ 线路过载分析</span>
+                        <span class="tool-desc">检查线路负载率是否超标</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">📉 电压越限分析</span>
+                        <span class="tool-desc">检查母线电压是否超出范围</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">💡 网损分析</span>
+                        <span class="tool-desc">计算线路和变压器损耗</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">🗺️ 电网拓扑查询</span>
+                        <span class="tool-desc">列出母线/线路/发电机连接关系</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">🔧 元件参数查询</span>
+                        <span class="tool-desc">查询线路/母线/变压器参数(R/X/容量)</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">📚 知识/元信息查询</span>
+                        <span class="tool-desc">电压范围/N-1准则/分析方法</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">📊 排序筛选(Top-N)</span>
+                        <span class="tool-desc">按负载率/电压/损耗排序</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">🎯 单元件N-1分析</span>
+                        <span class="tool-desc">对指定元件做开断安全分析</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">⚠️ 风险报告</span>
+                        <span class="tool-desc">汇总越限/过载并给证据建议</span>
+                    </li>
+                    <li>
+                        <span class="tool-name">🔀 运行方式分析</span>
+                        <span class="tool-desc">退出/检修元件后再分析</span>
+                    </li>
+                </ul>
+                
+                <div class="status-panel">
+                    <h4>📋 系统状态</h4>
+                    <div class="status-item">
+                        <span>服务状态</span>
+                        <span id="serviceStatus">检查中...</span>
+                    </div>
+                    <div class="status-item">
+                        <span>已提问数</span>
+                        <span id="questionCount">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="company-footer">
+            <p>© 国网浙江省电力有限公司 版权所有</p>
+            <p>State Grid Zhejiang Electric Power Co., Ltd.</p>
+        </div>
+    </div>
+    
+    <script>
+        let questionCount = 0;
+        
+        function setQuestion(text) {
+            document.getElementById('questionInput').value = text;
+            document.getElementById('questionInput').focus();
+        }
+        
+        async function submitQuestion() {
+            const input = document.getElementById('questionInput');
+            const question = input.value.trim();
+            
+            if (!question) {
+                alert('请输入问题');
+                return;
+            }
+            
+            const submitBtn = document.getElementById('submitBtn');
+            const typingIndicator = document.getElementById('typingIndicator');
+            
+            // 隐藏空状态
+            document.getElementById('emptyState').style.display = 'none';
+            
+            // 添加用户消息
+            addUserMessage(question);
+            
+            // 清空输入
+            input.value = '';
+            
+            // 显示加载指示器
+            submitBtn.disabled = true;
+            typingIndicator.classList.add('active');
+            
+            try {
+                // 发送请求（不再传递grid_type，让智能体自动选择）
+                const response = await fetch('/api/question', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        question: question
+                    })
+                });
+                
+                const result = await response.json();
+                
+                // 添加智能体回复
+                addAgentMessage(result);
+                
+                questionCount++;
+                document.getElementById('questionCount').textContent = questionCount;
+                
+            } catch (error) {
+                addAgentMessage({
+                    question_id: 'ERROR',
+                    answer_output: {
+                        status: 'failed',
+                        summary: '请求失败：' + error.message,
+                        message: error.message,
+                        data: {}
+                    }
+                });
+            } finally {
+                submitBtn.disabled = false;
+                typingIndicator.classList.remove('active');
+            }
+        }
+        
+        function addUserMessage(question) {
+            const chatHistory = document.getElementById('chatHistory');
+            const div = document.createElement('div');
+            div.className = 'message user';
+            div.innerHTML = `
+                <div class="message-content">
+                    <div class="message-bubble">${escapeHtml(question)}</div>
+                    <div class="message-meta">用户</div>
+                </div>
+                <div class="message-avatar">👤</div>
+            `;
+            chatHistory.appendChild(div);
+            scrollToBottom();
+        }
+        
+        function addAgentMessage(result) {
+            const chatHistory = document.getElementById('chatHistory');
+            const answer = result.answer_output;
+            const statusClass = answer.status === 'success' ? 'success' : 'failed';
+            const statusText = answer.status === 'success' ? '成功' : '失败';
+            
+            const div = document.createElement('div');
+            div.className = 'message agent';
+            
+            // 构建电网选择信息
+            let gridInfoHtml = '';
+            if (answer.grid_name) {
+                gridInfoHtml = `
+                    <div style="background: #e6f7ee; border-left: 3px solid #00843D; padding: 6px 10px; margin-bottom: 10px; border-radius: 4px; font-size: 12px; color: #00632B;">
+                        <span style="font-weight: 600;">⚡ 智能选择电网：</span>
+                        <span>${escapeHtml(answer.grid_name)}</span>
+                        <span style="color: #6b8f71; margin-left: 8px;">(${escapeHtml(answer.grid_type || '')})</span>
+                    </div>
+                `;
+            }
+            
+            let html = `
+                <div class="message-avatar">🤖</div>
+                <div class="message-content">
+                    <div class="answer-card">
+                        <div class="card-header">
+                            <span class="card-title">${escapeHtml(answer.analysis_type || '分析结果')}</span>
+                            <div>
+                                <span class="badge ${statusClass}">${statusText}</span>
+                                <span class="badge info" style="margin-left:5px;">${escapeHtml(result.question_id)}</span>
+                            </div>
+                        </div>
+                        ${gridInfoHtml}
+            `;
+            
+            // 添加摘要
+            if (answer.summary) {
+                html += `<div class="summary-box">💬 ${escapeHtml(answer.summary)}</div>`;
+            }
+            
+            // 添加详细数据
+            if (answer.data && Object.keys(answer.data).length > 0) {
+                html += '<div class="data-section">';
+                html += '<h4>📊 详细数据</h4>';
+                html += renderData(answer.data);
+                html += '</div>';
+            }
+            
+            html += `
+                    </div>
+                    <div class="message-meta">智能体</div>
+                </div>
+            `;
+            
+            div.innerHTML = html;
+            chatHistory.appendChild(div);
+            scrollToBottom();
+        }
+        
+        function renderData(data) {
+            if (!data || typeof data !== 'object') return '';
+            
+            let html = '';
+            
+            for (const [key, value] of Object.entries(data)) {
+                html += renderDataItem(key, value);
+            }
+            
+            return html;
+        }
+
+        function renderDataItem(key, value) {
+            if (value === null || value === undefined) {
+                return `<div class="data-item"><div class="label">${escapeHtml(key)}</div><div class="value">无数据</div></div>`;
+            }
+            if (Array.isArray(value)) {
+                if (value.length === 0) {
+                    return `<div class="data-item"><div class="label">${escapeHtml(key)}</div><div class="value">无数据</div></div>`;
+                }
+                if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+                    let html = `<div style="margin-top:10px;"><strong style="font-size:12px;color:#4a5568;">${escapeHtml(key)} (${value.length}条)</strong>`;
+                    html += '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>';
+                    const headers = Object.keys(value[0]);
+                    headers.forEach(h => {
+                        html += `<th>${escapeHtml(h)}</th>`;
+                    });
+                    html += '</tr></thead><tbody>';
+                    value.slice(0, 5).forEach(row => {
+                        html += '<tr>';
+                        headers.forEach(h => {
+                            html += `<td>${escapeHtml(String(row[h] ?? ''))}</td>`;
+                        });
+                        html += '</tr>';
+                    });
+                    html += '</tbody></table></div>';
+                    if (value.length > 5) {
+                        html += `<div style="font-size:11px;color:#a0aec0;margin-top:5px;">仅显示前5条，共${value.length}条</div>`;
+                    }
+                    html += '</div>';
+                    return html;
+                } else {
+                    let html = `<div style="margin-top:6px;"><strong style="font-size:12px;color:#4a5568;">${escapeHtml(key)}</strong>`;
+                    html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">';
+                    value.slice(0, 10).forEach(item => {
+                        html += `<span style="background:#e2e8f0;padding:2px 8px;border-radius:4px;font-size:12px;">${escapeHtml(String(item))}</span>`;
+                    });
+                    html += '</div></div>';
+                    return html;
+                }
+            }
+            if (typeof value === 'object' && value !== null) {
+                let html = `<div style="margin-top:10px;"><strong style="font-size:12px;color:#4a5568;">${escapeHtml(key)}</strong>`;
+                html += '<div class="data-grid">';
+                for (const [k, v] of Object.entries(value)) {
+                    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+                        html += `<div class="data-item"><div class="label">${escapeHtml(k)}</div><div class="value">${escapeHtml(JSON.stringify(v))}</div></div>`;
+                    } else {
+                        html += renderDataItem(k, v);
+                    }
+                }
+                html += '</div></div>';
+                return html;
+            }
+            return `<div class="data-item"><div class="label">${escapeHtml(key)}</div><div class="value">${escapeHtml(String(value))}</div></div>`;
+        }
+        
+        function scrollToBottom() {
+            const chatHistory = document.getElementById('chatHistory');
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // 回车键提交
+        document.getElementById('questionInput').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submitQuestion();
+            }
+        });
+        
+        // 检查服务状态
+        async function checkService() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                document.getElementById('serviceStatus').textContent = '✅ 正常';
+                document.getElementById('serviceStatus').style.color = '#68d391';
+            } catch {
+                document.getElementById('serviceStatus').textContent = '❌ 异常';
+                document.getElementById('serviceStatus').style.color = '#fc8181';
+            }
+        }
+        
+        checkService();
+        setInterval(checkService, 30000);
+    </script>
+</body>
+</html>

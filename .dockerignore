@@ -1,0 +1,8 @@
+venv/
+.stage/
+.py312/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
