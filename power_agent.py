@@ -32,6 +32,8 @@ class PowerAgent:
     3. 支持多轮对话和问题编号管理
     """
     
+    SKIP_RUNPP_TOOLS = {"get_line_overload_summary", "get_voltage_violation_summary", "calculate_loss_analysis"}
+    
     def __init__(self, use_llm: bool = True, api_key: str = None):
         """初始化智能体
         
@@ -66,34 +68,37 @@ class PowerAgent:
         self.question_counter += 1
         return f"Q{self.question_counter:04d}"
     
-    def answer_question(self, question: str, 
-                        grid_type: str = None,
-                        **kwargs) -> Dict[str, Any]:
-        """回答用户问题
-        
-        Args:
-            question: 用户问题文本
-            grid_type: 电网类型（为None时自动选择）
-            **kwargs: 其他参数
-        
-        Returns:
-            Dict[str, Any]: 包含question_id和answer_output的结果
-        """
+    def answer_question(self, question: str, grid_type: str = None,**kwargs) -> Dict[str, Any]:
+
         question_id = self._generate_question_id()
         
         try:
+            # 初始化历史上下文缓存，供 _apply_history_context 和 answer_question 共用
+            self._last_pf_check = (False, None)
+            
             # 先解析问题，获取推荐的电网类型和工具
+            # _apply_history_context 内部会自动修正 grid_type（如需）
             parse_result = self._parse_question(question)
             
-            # 确定电网类型：优先使用用户指定，否则使用解析结果
+            # 历史上下文感知：复用 _apply_history_context 中已检查的结果
+            has_recent_pf, pf_grid_type = self._last_pf_check
+            
+            # 确定电网类型：优先使用用户指定，否则使用解析结果（已由历史上下文修正）
             if grid_type is None:
                 grid_type = parse_result.get("grid_type", "case30")
             
             tool_name = parse_result.get("tool_name", "run_ac_power_flow")
             tool_params = parse_result.get("tool_params", {})
             
+            can_reuse_pf = (
+                has_recent_pf 
+                and pf_grid_type == grid_type
+                and tool_name in self.SKIP_RUNPP_TOOLS
+            )
+            
             # 初始化电网（如果需要）
-            if not self._initialized or self.current_grid_type != grid_type:
+            need_init = (not self._initialized) or (self.current_grid_type != grid_type)
+            if need_init:
                 init_result = self.grid_tools.create_test_grid(grid_type)
                 if not init_result["success"]:
                     return {
@@ -106,6 +111,8 @@ class PowerAgent:
                 self._initialized = True
                 self.current_grid_type = grid_type
                 print(f"[Agent] 已选择电网: {grid_type}")
+            elif can_reuse_pf and tool_params.get("skip_runpp"):
+                print(f"[Agent] 复用历史潮流结果({grid_type})，跳过重复潮流计算")
             
             # 执行工具（复合分析走专用编排逻辑）
             if tool_name == "_composite_n1_rank":
@@ -171,6 +178,7 @@ class PowerAgent:
         """解析用户问题，确定电网类型和调用的工具
         优先使用LLM理解，失败时回退到关键词匹配
         复合意图判断在两个分支收敛后统一执行
+        历史上下文感知：检测到查询类问题时自动复用之前的潮流计算结果
         
         Args:
             question: 用户问题
@@ -200,6 +208,9 @@ class PowerAgent:
             self._last_used_llm = False
             parse_result = self._parse_by_keywords(question)
 
+        # 历史上下文感知：检测查询类问题是否需要复用潮流结果
+        parse_result = self._apply_history_context(parse_result, question)
+
         # 统一复合意图判断（在两个分支收敛后执行，确保只写一处逻辑）
         if self._is_composite_intent(question):
             if self._is_voltage_correction_skill(question):
@@ -216,6 +227,75 @@ class PowerAgent:
                 print(f"[复合意图] 解析成功: 电网={parse_result['grid_type']}, 工具={parse_result['tool_name']}, 参数={parse_result['tool_params']}")
         return parse_result
     
+    def _apply_history_context(self, parse_result: Dict, question: str) -> Dict:
+        """应用历史会话上下文，检测查询类问题是否需要复用之前的潮流计算结果
+        
+        当用户在潮流计算后询问"是否出现线路过载"或"是否出现电压越限"时，
+        自动检测历史中是否已有潮流计算结果，若有则设置 skip_runpp=True 避免重复计算。
+        
+        Args:
+            parse_result: 初步解析结果
+            question: 用户原始问题
+        
+        Returns:
+            Dict: 更新后的解析结果
+        """
+        tool_name = parse_result.get("tool_name", "")
+        tool_params = parse_result.get("tool_params", {})
+        
+        # 需要潮流结果作为前置条件的工具（但不一定支持 skip_runpp）
+        query_tools_need_pf = self.SKIP_RUNPP_TOOLS | {
+            "run_n1_security_check",
+            "run_short_circuit_analysis",
+            "check_voltage_stability",
+        }
+        
+        if tool_name not in query_tools_need_pf:
+            return parse_result
+        
+        # 检查历史记录中是否已有潮流计算结果
+        has_recent_pf, pf_grid_type = self._has_recent_power_flow()
+        self._last_pf_check = (has_recent_pf, pf_grid_type)
+        
+        if has_recent_pf:
+            # 如果历史中已有潮流结果，且工具支持 skip_runpp，则设置该参数
+            if tool_name in self.SKIP_RUNPP_TOOLS:
+                if not tool_params.get("skip_runpp", False):
+                    tool_params["skip_runpp"] = True
+                    parse_result["tool_params"] = tool_params
+                    print(f"[历史上下文] 检测到之前的潮流计算结果({pf_grid_type})，跳过重复潮流计算")
+            
+            # 如果用户没显式指定电网类型（默认case30），且历史潮流的电网类型不同，
+            # 则使用历史潮流的电网类型，避免电网被错误重置
+            current_grid_type = parse_result.get("grid_type", "")
+            if current_grid_type == "case30" and pf_grid_type and pf_grid_type != "case30":
+                parse_result["grid_type"] = pf_grid_type
+                print(f"[历史上下文] 修正电网类型: {current_grid_type} → {pf_grid_type}")
+        
+        return parse_result
+    
+    def _has_recent_power_flow(self) -> tuple:
+        """检查历史会话中是否已有潮流计算结果
+        
+        Returns:
+            tuple: (是否存在潮流结果, 电网类型)
+        """
+        if not self.conversation_history:
+            return False, None
+        
+        # 从最近的历史记录开始查找
+        for record in reversed(self.conversation_history):
+            answer = record.get("answer", {})
+            if answer.get("analysis_type") == "交流潮流计算":
+                grid_type = record.get("grid_type", None)
+                # 检查潮流结果是否成功
+                if answer.get("status") == "success":
+                    return True, grid_type
+                # 即使失败的潮流也会在 net 中留下结果
+                return True, grid_type
+        
+        return False, None
+    
     @staticmethod
     def _is_composite_intent(question: str) -> bool:
         """判断是否为复合任务意图（N-1排序 / 电压修正skill / 负荷扫描skill）。"""
@@ -230,10 +310,29 @@ class PowerAgent:
 
     @staticmethod
     def _is_voltage_correction_skill(question: str) -> bool:
-        """判断是否触发电压修正skill。"""
+        """判断是否触发电压修正skill。
+        
+        区分"查询电压越限"和"修正电压越限"：
+        - 查询类：是否出现电压越限、电压越限情况、电压越限分析
+        - 修正类：修正电压越限、修复电压越限、调整电压、消除越限
+        """
         q = question.lower()
         triggers = VOLTAGE_CORRECTION_SKILL.get("triggers", [])
-        return any(kw in q for kw in triggers)
+        
+        # 先检查是否包含触发词
+        has_trigger = any(kw in q for kw in triggers)
+        if not has_trigger:
+            return False
+        
+        # 排除查询类问题（只查询越限情况，不要求修正）
+        query_keywords = ["是否", "情况", "分析", "有哪些", "有没有", "出现", "存在", "显示", "报告"]
+        has_query_intent = any(kw in question for kw in query_keywords)
+        
+        # 如果只是查询越限情况，不触发修正skill
+        if has_query_intent and "修正" not in question and "修复" not in question and "调整" not in question and "消除" not in question:
+            return False
+        
+        return True
 
     @staticmethod
     def _is_load_sweep_skill(question: str) -> bool:

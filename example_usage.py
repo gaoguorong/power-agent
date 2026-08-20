@@ -189,6 +189,64 @@ def example_7_available_tools():
         print(f"  参数: {tool['parameters']}")
 
 
+def example_8_history_context():
+    """示例8：历史会话上下文功能 - 多轮对话复用潮流结果
+    
+    演示场景：
+    1. 用户输入"基于30节点电网模型进行潮流计算" -> 执行潮流计算
+    2. 用户输入"是否出现线路过载" -> 基于之前潮流结果查询
+    3. 用户输入"是否出现电压越限" -> 基于之前潮流结果查询
+    """
+    print("\n" + "=" * 60)
+    print("示例8：历史会话上下文功能")
+    print("=" * 60)
+    print("\n演示多轮对话：潮流计算 -> 线路过载查询 -> 电压越限查询")
+    print("（后两个查询将自动复用第一次潮流计算的结果）\n")
+    
+    agent = PowerAgent()
+    
+    # 第一轮：进行潮流计算
+    print("【第1轮】用户: 基于30节点电网模型进行潮流计算")
+    response1 = agent.answer_question("基于30节点电网模型进行潮流计算", grid_type="case30")
+    print(f"  问题ID: {response1['question_id']}")
+    print(f"  分析类型: {response1['answer_output']['analysis_type']}")
+    print(f"  摘要: {response1['answer_output']['summary']}")
+    print(f"  状态: {response1['answer_output']['status']}")
+    
+    # 第二轮：查询线路过载（应复用潮流结果）
+    print("\n【第2轮】用户: 是否出现线路过载？")
+    response2 = agent.answer_question("是否出现线路过载？")
+    print(f"  问题ID: {response2['question_id']}")
+    print(f"  分析类型: {response2['answer_output']['analysis_type']}")
+    print(f"  摘要: {response2['answer_output']['summary']}")
+    print(f"  状态: {response2['answer_output']['status']}")
+    
+    # 第三轮：查询电压越限（应复用潮流结果）
+    print("\n【第3轮】用户: 是否出现电压越限？")
+    response3 = agent.answer_question("是否出现电压越限？")
+    print(f"  问题ID: {response3['question_id']}")
+    print(f"  分析类型: {response3['answer_output']['analysis_type']}")
+    print(f"  摘要: {response3['answer_output']['summary']}")
+    print(f"  状态: {response3['answer_output']['status']}")
+    
+    # 第四轮：查询网损（同样复用潮流结果）
+    print("\n【第4轮】用户: 计算当前网损情况")
+    response4 = agent.answer_question("计算当前网损情况")
+    print(f"  问题ID: {response4['question_id']}")
+    print(f"  分析类型: {response4['answer_output']['analysis_type']}")
+    print(f"  摘要: {response4['answer_output']['summary']}")
+    print(f"  状态: {response4['answer_output']['status']}")
+    
+    # 展示对话历史
+    history = agent.get_conversation_history()
+    print(f"\n对话历史记录数: {len(history)}")
+    for record in history:
+        print(f"  - {record['question_id']}: {record['question'][:30]}... -> {record['tool_used']}")
+    
+    # 返回详细的最后一个响应
+    return response3
+
+
 def main():
     """运行所有示例"""
     print("#" * 60)
@@ -231,6 +289,13 @@ def main():
         example_7_available_tools()
     except Exception as e:
         print(f"示例7执行失败: {e}")
+    
+    try:
+        example_8_history_context()
+    except Exception as e:
+        import traceback
+        print(f"示例8执行失败: {e}")
+        traceback.print_exc()
     
     print("\n" + "#" * 60)
     print("# 所有示例执行完成")

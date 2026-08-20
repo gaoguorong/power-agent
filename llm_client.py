@@ -3,15 +3,18 @@
 LLM客户端模块 - DeepSeek大模型集成
 
 用于理解用户问题，智能选择分析工具和参数
+工具清单通过 MCP tools/list 动态获取，不再硬编码
 """
 
 import json
 import requests
 from typing import Dict, Any, Optional, List
 from config import LLM_CONFIG
+from mcp_server import mcp_dispatch
 
-# 系统提示词 - 告诉LLM可用的工具和如何选择
-SYSTEM_PROMPT = """你是一个电网静态安全分析智能体的工具调度模块。
+# 系统提示词 - 只保留角色、电网选择、输出格式
+# 工具清单通过 MCP tools/list 动态注入
+SYSTEM_PROMPT_TEMPLATE = """你是一个电网静态安全分析智能体的工具调度模块。
 你的任务是理解用户的问题，并选择最合适的电网模型和分析工具。
 
 ## 电网模型选择（grid_type）：
@@ -31,73 +34,8 @@ SYSTEM_PROMPT = """你是一个电网静态安全分析智能体的工具调度�
 - 用户提到"大型"、"复杂"、"N-1全校核"时用case118
 - 用户提到"超大规模"、"300节点"时用case300
 
-## 可用分析工具列表：
-
-1. **run_ac_power_flow** - 交流潮流计算
-   参数：无
-
-2. **run_n1_security_check** - N-1静态安全校核
-   参数：element_type (可选: line/trafo/bus，默认line)
-
-3. **run_short_circuit_analysis** - 短路计算分析
-   参数：fault_type (可选: 3phase/2phase/1phase，默认3phase)
-
-4. **check_voltage_stability** - 电压稳定性分析
-   参数：max_load_factor (默认2.0)
-
-5. **get_line_overload_summary** - 线路过载分析
-   参数：threshold (默认80.0)
-
-6. **get_voltage_violation_summary** - 电压越限分析
-   参数：vmin_pu (默认0.95), vmax_pu (默认1.05)
-
-7. **calculate_loss_analysis** - 网损分析
-   参数：无
-
-8. **get_grid_topology** - 获取电网拓扑结构
-   参数：无
-   适用：用户问"列出所有母线/线路/发电机""某条线路连哪两个母线""电网有哪些元件"
-
-9. **list_grid_elements** - 列出元件清单
-   参数：element_type (可选: bus/line/trafo/gen/load/ext_grid/all，默认all)
-
-10. **get_element_params** - 获取元件参数（电阻/电抗/容量/设定值等）
-   参数：element_type (bus/line/trafo/gen/load/ext_grid),
-        element_id (int 索引 或 名称字符串，如 "Bus 2"/"母线2"/"Line 1-2")
-
-11. **query_knowledge** - 查询电网分析知识/元信息
-   参数：topic (可选: 电压范围/N-1/工具/潮流/短路/频率，为空返回全部)
-   适用：用户问"电压正常范围""N-1检查什么""有哪些工具""什么是潮流计算"
-
-12. **rank_elements** - 按指标排序筛选(Top-N)
-   参数：element_type (line/trafo/bus), metric (loading_percent/voltage/ploss_mw),
-        top_n (默认5), order (desc/asc)
-   适用：用户问"负载率最高的5条线路""电压最低的母线""损耗最大的变压器"
-
-13. **analyze_element_security** - 对单一指定元件做N-1安全分析
-   参数：element_type (line/trafo/bus), element_id (int 或 名称字符串)
-   适用：用户问"对线路X做N-1分析""母线Y退出后是否安全"
-
-14. **generate_risk_report** - 生成电网风险报告（含越限/过载证据与建议）
-   参数：vmin_pu (默认0.95), vmax_pu (默认1.05),
-        overload_threshold (默认100), top_n (默认5)
-   适用：用户问"输出风险报告""有哪些电压越限/线路过载及其证据"
-
-15. **analyze_with_outage** - 在指定元件退出的运行方式(检修方式)下做分析
-   参数：element_type (line/trafo/bus), element_ids (列表),
-        analysis (power_flow/voltage_violation/line_overload)
-   适用：用户问"在退出某线路的运行方式下计算潮流""检修方式下有无越限"
-
-## 选择建议补充：
-- 用户问"结构/拓扑/连接/有哪些元件/列出了" → get_grid_topology 或 list_grid_elements
-- 用户问"某元件的参数/R/X/容量/设定" → get_element_params
-- 用户问"概念/准则/范围/有哪些工具/是什么" → query_knowledge
-- 用户问"最高的N条/最低的几个/排序/Top" → rank_elements
-- 用户问"对某个具体元件做N-1/某母线退出" → analyze_element_security
-- 用户问"风险/越限/过载/报告/证据" → generate_risk_report
-- 用户问"退出/检修/停运某元件后再分析" → analyze_with_outage
-- element_id 既可以传整数索引，也可以传名称字符串（如 "Bus 2"、"母线2"、"Line 1-2"），系统会自动解析；
-  若不确定索引，可先用 get_grid_topology 获取，但单轮对话中请直接依据用户给出的名称/编号填写。
+## 可用分析工具列表（动态注入）：
+{tools_description}
 
 ## 输出格式要求：
 你必须返回JSON格式：
@@ -145,32 +83,25 @@ class LLMClient:
         return True
     
     def parse_question(self, question: str) -> Dict[str, Any]:
-        """使用LLM解析用户问题，选择合适的电网和工具
-        
-        Args:
-            question: 用户问题文本
-        
-        Returns:
-            Dict: 包含grid_type, tool_name, tool_params, reasoning的结果
-        """
+
         if not self._is_configured():
-            # API Key未配置，返回None让调用者使用关键词匹配
             return None
         
         try:
-            # 构建消息
+            tools_description = self._get_tools_description()
+            
+            system_prompt = SYSTEM_PROMPT_TEMPLATE.replace(
+                "{tools_description}", tools_description
+            )
+            
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question}
             ]
             
-            # 调用LLM
             response = self._call_api(messages)
-            
-            # 解析响应
             result = self._parse_response(response)
             
-            # 确保返回结果包含grid_type
             if "grid_type" not in result:
                 result["grid_type"] = "case30"
             
@@ -180,6 +111,84 @@ class LLMClient:
             print(f"[LLM] 调用失败: {e}")
             return None
     
+    def _get_tools_description(self) -> str:
+
+        try:
+
+            json_temp = {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "tools/list",
+            }
+            resp = mcp_dispatch(json_temp)
+            
+            if "error" in resp:
+                print(f"[LLM] MCP tools/list 返回错误: {resp['error']}")
+                return self._get_fallback_tools()
+            
+            tools = resp.get("result", {}).get("tools", [])
+            
+            lines = [f"共 {len(tools)} 个工具：\n"]
+            for i, tool in enumerate(tools, 1):
+                name = tool.get("name", "unknown")
+                desc = tool.get("description", "")
+                schema = tool.get("inputSchema", {})
+                
+                lines.append(f"{i}. **{name}** - {desc}")
+                
+                props = schema.get("properties", {})
+                required = schema.get("required", [])
+                if props:
+                    lines.append("参数：")
+                    for prop_name, prop_info in props.items():
+                        pdesc = prop_info.get("description", "")
+                        ptype = prop_info.get("type", "string")
+                        req_mark = " (必填)" if prop_name in required else " (可选)"
+                        lines.append(f"-{prop_name} ({ptype}){req_mark}: {pdesc}")
+                else:
+                    lines.append("参数：无")
+                
+                lines.append("")
+            
+            return "\n".join(lines)
+            
+        except Exception as e:
+            print(f"[LLM] MCP tools/list 调用失败，使用备用清单: {e}")
+            return self._get_fallback_tools()
+    
+    @staticmethod
+    def _get_fallback_tools() -> str:
+        """备用工具描述（当 MCP 不可用时使用）"""
+        return """1. **run_ac_power_flow** - 交流潮流计算
+   参数：无
+
+2. **run_n1_security_check** - N-1静态安全校核
+   参数：element_type (可选: line/trafo/bus，默认line)
+
+3. **get_line_overload_summary** - 线路过载分析
+   参数：threshold (默认80.0), skip_runpp (可选: bool)
+
+4. **get_voltage_violation_summary** - 电压越限分析
+   参数：vmin_pu (默认0.95), vmax_pu (默认1.05), skip_runpp (可选: bool)
+
+5. **set_load_scale** - 按倍率调整负荷
+   参数：factor (float, 必填: 负荷倍率)
+
+6. **create_test_grid** - 创建测试电网
+   参数：grid_type (case9/case14/case30/case39/case57/case118/case300/simple)
+
+7. **get_grid_topology** - 获取电网拓扑
+   参数：无
+
+8. **list_grid_elements** - 列出元件清单
+   参数：element_type (bus/line/trafo/gen/load/ext_grid/all)
+
+9. **get_element_params** - 获取元件参数
+   参数：element_type, element_id
+
+10. **query_knowledge** - 查询电网知识
+    参数：topic (可选)"""
+
     def _call_api(self, messages: List[Dict]) -> str:
         """调用DeepSeek API
         
@@ -216,29 +225,28 @@ class LLMClient:
     
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
         """解析LLM响应
-        
+
         Args:
             response_text: LLM返回的文本
-        
+
         Returns:
             Dict: 解析后的结果
         """
         # 尝试直接解析JSON
         try:
-            # 清理可能的markdown格式
             cleaned = self._clean_json_response(response_text)
             return json.loads(cleaned)
         except json.JSONDecodeError:
             pass
         
-        # 尝试用正则提取JSON
+        # 兜底：提取第一个 { 到最后一个 } 之间的内容
         try:
-            import re
-            # 查找JSON块
-            match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
-            if match:
-                return json.loads(match.group())
-        except (json.JSONDecodeError, AttributeError):
+            start = response_text.find('{')
+            end = response_text.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                json_str = response_text[start:end + 1]
+                return json.loads(json_str)
+        except (json.JSONDecodeError, ValueError):
             pass
         
         # 返回默认值

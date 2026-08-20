@@ -104,23 +104,7 @@ class GridTools:
         return net
     
     def _create_case39(self) -> pp.pandapowerNet:
-        """创建IEEE 39节点测试系统（New England 39-bus）
-        
-        标准IEEE 39节点系统参数：
-        - 39个母线
-        - 10台发电机
-        - 12台变压器
-        - 34条线路
-        - 19个负荷
-        - 基准频率60Hz，基准容量100MVA
-        
-        Returns:
-            pandapowerNet: IEEE 39节点电网模型
-        """
-        # 优先采用 pandapower 内置标准 case39（New England 39-bus）：
-        # 完整连通、参数合理、潮流可收敛，能够支撑测评所需的各项分析。
-        # 并将元件命名为 Bus N / Line X-Y / Generator N / Trafo N 风格，
-        # 兼容基于名称的自然语言引用与既有测评用例。
+
         try:
             net = pp.networks.case39()
             for i in net.bus.index:
@@ -1206,8 +1190,11 @@ class GridTools:
         except Exception as e:
             return {"success": False, "message": f"电压越限分析失败: {str(e)}"}
     
-    def calculate_loss_analysis(self) -> Dict:
+    def calculate_loss_analysis(self, skip_runpp: bool = False) -> Dict:
         """网损分析计算
+        
+        Args:
+            skip_runpp: 是否跳过潮流计算（当已有潮流结果时设为True）
         
         Returns:
             Dict: 网损分析结果
@@ -1216,7 +1203,8 @@ class GridTools:
             return {"success": False, "message": "请先创建电网模型"}
         
         try:
-            pp.runpp(self.net)
+            if not skip_runpp:
+                pp.runpp(self.net)
             if not self.net.converged:
                 return {"success": False, "message": "潮流计算不收敛"}
             
@@ -2091,6 +2079,14 @@ class GridTools:
                     "vmax_pu": "float - 电压上限(默认1.05)"
                 },
                 "returns": "Dict - 电压修正结果，含越限详情和修正操作"
+            },
+            {
+                "name": "set_load_scale",
+                "description": "按倍率调整所有负荷的有功和无功（基于原始基准值，避免累积误差）",
+                "parameters": {
+                    "factor": "float - 负荷倍率（1.0=原始值, 2.0=两倍, 4.0=四倍）"
+                },
+                "returns": "Dict - 调整结果（含调整前后的负荷统计）"
             },
         ]
         return tools
