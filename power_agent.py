@@ -47,7 +47,8 @@ class PowerAgent:
         self.conversation_history = []
         self.current_grid_type = None
         self._initialized = False
-        self._last_used_llm = False  # 记录上次是否使用LLM
+        self._last_used_llm = False
+        self._load_sweep_state = {"active": False, "grid_type": None, "scenarios": []}
     
     def get_llm_status(self) -> Dict:
         """获取LLM状态
@@ -121,8 +122,17 @@ class PowerAgent:
                 result = self._run_skill_voltage_correction()
             elif tool_name == "_skill_load_sweep":
                 result = self._run_skill_load_sweep()
+            elif tool_name == "_skill_load_sweep_step":
+                result = self._run_skill_load_sweep_step(question)
+                render_tool = result.get("_render_as")
+                if render_tool:
+                    tool_name = render_tool
+                    print(f"[问答式负荷扫描] 重定向渲染工具: {tool_name}")
             else:
                 result = self.grid_tools.execute_tool(tool_name, **tool_params)
+                if tool_name == "run_ac_power_flow" and self._load_sweep_state.get("active", False):
+                    self._load_sweep_state["active"] = False
+                    print("[问答式负荷扫描] 检测到非负荷扫描潮流计算，上下文已失效")
             
             # 构建回答
             answer = self._build_answer(question, tool_name, result)
@@ -225,6 +235,12 @@ class PowerAgent:
                 parse_result["tool_name"] = "_composite_n1_rank"
                 parse_result["tool_params"] = {}
                 print(f"[复合意图] 解析成功: 电网={parse_result['grid_type']}, 工具={parse_result['tool_name']}, 参数={parse_result['tool_params']}")
+
+        if self._is_interactive_load_sweep(question):
+            parse_result["tool_name"] = "_skill_load_sweep_step"
+            parse_result["tool_params"] = {}
+            print(f"[问答式负荷扫描] 解析成功: 电网={parse_result['grid_type']}")
+
         return parse_result
     
     def _apply_history_context(self, parse_result: Dict, question: str) -> Dict:
@@ -811,7 +827,407 @@ class PowerAgent:
             return result
         except Exception as e:
             return {"success": False, "message": f"负荷扫描skill执行失败: {str(e)}"}
-    
+
+    @staticmethod
+    def _extract_load_factor(question: str) -> Optional[float]:
+        """从问题中提取负荷倍率数值
+
+        支持的格式:
+        - "2倍", "2 倍", "2.0倍", "2x", "两倍", "二倍"
+        - "调高2倍", "调到2倍", "2倍水平"
+
+        当问题包含多倍率对比模式时返回None（如"对比2倍和4倍"）。
+
+        Args:
+            question: 用户问题
+
+        Returns:
+            Optional[float]: 倍率值，未找到或多倍率对比返回None
+        """
+        import re
+        q = question.strip()
+
+        comparison_kw = ["对比", "比较", "和", "与", "跟", "及", "versus", "vs"]
+        if any(kw in q for kw in comparison_kw) and len(re.findall(r'[\d]+\.?[\d]*\s*[倍xX]', q)) >= 2:
+            return None
+
+        ch_map = {"一": 1.0, "二": 2.0, "两": 2.0, "三": 3.0, "四": 4.0,
+                  "五": 5.0, "六": 6.0, "七": 7.0, "八": 8.0, "九": 9.0, "十": 10.0}
+
+        m = re.search(r'(\d+\.?\d*)\s*[倍xX]', q)
+        if m:
+            return float(m.group(1))
+
+        for ch, val in sorted(ch_map.items(), key=lambda x: -len(x[0])):
+            pattern = ch + r'\s*[倍xX]'
+            if re.search(pattern, q):
+                return val
+
+        m = re.search(r'(\d+\.?\d*)', q)
+        if m and any(kw in q for kw in ["倍", "倍率", "水平", "负荷"]):
+            return float(m.group(1))
+
+        return None
+
+    def _is_interactive_load_sweep(self, question: str) -> bool:
+        """判断是否为问答式负荷扫描模式
+
+        判定逻辑:
+        1. 已激活状态下，用户继续追问负荷相关结果（即使不含"负荷"关键词）
+        2. 用户问题中包含负荷相关关键词 + 具体倍率
+        3. 排除纯批处理请求
+
+        Args:
+            question: 用户问题
+
+        Returns:
+            bool: 是否进入问答式编排模式
+        """
+        q = question.lower()
+        load_keywords = ["负荷", "加载", "倍率", "倍", "水平", "调高", "调大",
+                         "加大", "增大", "增加", "提升", "放大", "提负荷", "加负荷"]
+        has_load_kw = any(kw in q for kw in load_keywords)
+
+        batch_keywords = ["扫描", "全扫", "全部倍率", "所有倍率", "批量"]
+        is_batch = any(kw in question for kw in batch_keywords)
+
+        if self._load_sweep_state.get("active", False):
+            if is_batch:
+                return False
+            query_kw = ["对比", "比较", "结果", "情况", "有哪些", "出现", "存在",
+                        "过载", "概况", "怎么样", "如何", "多少"]
+            if has_load_kw or any(kw in q for kw in query_kw):
+                return True
+
+        if not has_load_kw:
+            return False
+
+        if is_batch:
+            return False
+
+        factor = self._extract_load_factor(question)
+        if factor is not None:
+            return True
+
+        return False
+
+    def _load_sweep_extract_from_history(self) -> Dict:
+        """从会话历史中提取问答式负荷扫描的已有状态
+
+        Returns:
+            Dict: 包含已完成的场景列表和上下文信息
+        """
+        scenarios = list(self._load_sweep_state.get("scenarios", []))
+        grid_type = self._load_sweep_state.get("grid_type")
+
+        for record in self.conversation_history:
+            answer = record.get("answer", {})
+            analysis_type = answer.get("analysis_type", "")
+            if analysis_type in ("负荷扫描Skill", "问答式负荷扫描"):
+                data = answer.get("data", [])
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and "倍率" in item:
+                            found = False
+                            for s in scenarios:
+                                if s.get("倍率") == item.get("倍率"):
+                                    found = True
+                                    break
+                            if not found:
+                                scenarios.append(item)
+
+        scenarios.sort(key=lambda x: x.get("倍率", 0))
+        return {"scenarios": scenarios, "grid_type": grid_type}
+
+    @staticmethod
+    def _detect_load_sweep_intent(question: str) -> Dict:
+        """检测问答式负荷扫描的用户意图
+
+        Returns:
+            Dict: {
+                "want_pf": bool,       是否需要潮流计算结果
+                "want_overload": bool, 是否需要线路过载分析
+                "want_compare": bool, 是否需要多倍率对比
+                "want_details": bool, 是否需要详细数据
+            }
+        """
+        q = question.lower()
+
+        want_pf = any(kw in q for kw in ["潮流计算", "潮流", "电压", "母线", "功率",
+                                          "电流", "损耗", "发电机", "输出"])
+        want_overload = any(kw in q for kw in ["过载", "过负荷", "重载", "线路过载",
+                                                "overload", "拥塞"])
+        want_compare = any(kw in q for kw in ["对比", "比较", "差异", "区别"])
+
+        if not want_pf and not want_overload:
+            want_pf = True
+            want_overload = True
+
+        return {
+            "want_pf": want_pf,
+            "want_overload": want_overload,
+            "want_compare": want_compare,
+        }
+
+    def _run_skill_load_sweep_step(self, question: str) -> Dict:
+        """问答式负荷扫描编排方法
+
+        根据用户意图返回对应工具的标准结果格式:
+        - 纯潮流意图 → run_ac_power_flow 原始格式
+        - 纯过载意图 → get_line_overload_summary 原始格式
+        - 混合/查询/对比意图 → 问答式组合格式
+
+        Args:
+            question: 用户问题
+
+        Returns:
+            Dict: 执行结果，含 _render_as 标记用于外部格式路由
+        """
+        need_restore = False
+        try:
+            intent = self._detect_load_sweep_intent(question)
+            factor = self._extract_load_factor(question)
+
+            existing = self._load_sweep_extract_from_history()
+            scenarios = existing["scenarios"]
+            grid_type = existing["grid_type"]
+
+            self._load_sweep_state["active"] = True
+            if grid_type is None:
+                grid_type = self.current_grid_type or "case30"
+            self._load_sweep_state["grid_type"] = grid_type
+
+            if factor is not None:
+                already_done = [s for s in scenarios if s.get("倍率") == factor]
+                pf_converged = True
+
+                if already_done and not (intent["want_pf"] ^ intent["want_overload"]):
+                    print(f"[问答式负荷扫描] {factor}倍场景已存在")
+                    if not already_done[0].get("潮流收敛", True):
+                        pf_converged = False
+                else:
+                    if already_done:
+                        print(f"[问答式负荷扫描] {factor}倍场景已存在，重新获取原始结果")
+                    else:
+                        print(f"[问答式负荷扫描] 执行 {factor} 倍场景计算")
+
+                    scale_result = self.grid_tools.execute_tool("set_load_scale", factor=factor)
+                    if not scale_result.get("success"):
+                        return {"success": False, "message": f"设置负荷倍率失败: {scale_result.get('message')}"}
+
+                    need_restore = True
+
+                    pf_result = self.grid_tools.execute_tool("run_ac_power_flow")
+                    pf_converged = pf_result.get("success", False)
+
+                    scenario = {
+                        "倍率": factor,
+                        "潮流收敛": pf_converged,
+                    }
+
+                    if pf_converged:
+                        if intent["want_overload"]:
+                            overload_result = self.grid_tools.execute_tool(
+                                "get_line_overload_summary", skip_runpp=True
+                            )
+                            scenario["总线路数"] = overload_result.get("总线路数", 0)
+                            scenario["过载线路数"] = overload_result.get("过载线路数", 0)
+                            scenario["过载线路"] = overload_result.get("过载线路详情", [])
+
+                        if intent["want_pf"]:
+                            scenario["母线电压"] = pf_result.get("母线电压", [])
+                            scenario["线路潮流"] = pf_result.get("线路潮流", [])
+                            scenario["综合指标"] = pf_result.get("综合指标", {})
+                            scenario["发电机输出"] = pf_result.get("发电机输出", [])
+                            scenario["负载功率"] = pf_result.get("负载功率", [])
+
+                        print(f"[问答式负荷扫描] 完成 {factor} 倍计算")
+                    else:
+                        scenario["错误信息"] = pf_result.get("message", "")
+                        print(f"[问答式负荷扫描] {factor}倍潮流不收敛")
+
+                    scenarios = [s for s in scenarios if s.get("倍率") != factor]
+                    scenarios.append(scenario)
+                    self._load_sweep_state["scenarios"] = scenarios
+
+                if pf_converged:
+                    if intent["want_pf"] and not intent["want_overload"]:
+                        pf_result["_render_as"] = "run_ac_power_flow"
+                        pf_result["_load_factor"] = factor
+                        return pf_result
+                    elif intent["want_overload"] and not intent["want_pf"]:
+                        overload_result = self.grid_tools.execute_tool(
+                            "get_line_overload_summary", skip_runpp=True
+                        )
+                        overload_result["_render_as"] = "get_line_overload_summary"
+                        overload_result["_load_factor"] = factor
+                        return overload_result
+
+                current_scenarios = [s for s in scenarios if s.get("倍率") == factor]
+                result = self._assemble_interactive_result(current_scenarios, question, intent, factor=factor)
+                return result
+
+            else:
+                print("[问答式负荷扫描] 查询模式")
+
+                if scenarios:
+                    latest = scenarios[-1]
+                    latest_factor = latest.get("倍率", 1.0)
+                    print(f"[问答式负荷扫描] 使用历史场景: {latest_factor}倍")
+
+                    if not latest.get("潮流收敛", True):
+                        result = self._assemble_interactive_result([latest], question, intent, factor=latest_factor)
+                        return result
+
+                    if intent["want_overload"] and not intent["want_pf"]:
+                        result = {
+                            "success": True,
+                            "总线路数": latest.get("总线路数", 0),
+                            "过载线路数": latest.get("过载线路数", 0),
+                            "过载线路详情": latest.get("过载线路", []),
+                            "_render_as": "get_line_overload_summary",
+                            "_load_factor": latest_factor,
+                        }
+                        return result
+
+                    if intent["want_pf"] and not intent["want_overload"]:
+                        result = {
+                            "success": True,
+                            "母线电压": latest.get("母线电压", []),
+                            "线路潮流": latest.get("线路潮流", []),
+                            "综合指标": latest.get("综合指标", {}),
+                            "发电机输出": latest.get("发电机输出", []),
+                            "负载功率": latest.get("负载功率", []),
+                            "_render_as": "run_ac_power_flow",
+                            "_load_factor": latest_factor,
+                        }
+                        return result
+
+                    result = self._assemble_interactive_result([latest], question, intent, factor=latest_factor)
+                    return result
+
+                elif intent["want_pf"] or intent["want_overload"]:
+                    print("[问答式负荷扫描] 无历史场景，基于当前电网状态执行潮流计算")
+
+                    pf_result = self.grid_tools.execute_tool("run_ac_power_flow")
+                    pf_converged = pf_result.get("success", False)
+
+                    if pf_converged:
+                        if intent["want_overload"] and not intent["want_pf"]:
+                            overload_result = self.grid_tools.execute_tool(
+                                "get_line_overload_summary", skip_runpp=True
+                            )
+                            overload_result["_render_as"] = "get_line_overload_summary"
+                            overload_result["_load_factor"] = 1.0
+                            return overload_result
+
+                        if intent["want_pf"] and not intent["want_overload"]:
+                            pf_result["_render_as"] = "run_ac_power_flow"
+                            pf_result["_load_factor"] = 1.0
+                            return pf_result
+
+                        overload_result = self.grid_tools.execute_tool(
+                            "get_line_overload_summary", skip_runpp=True
+                        )
+                        current_scenario = {
+                            "倍率": 1.0,
+                            "潮流收敛": True,
+                            "总线路数": overload_result.get("总线路数", 0),
+                            "过载线路数": overload_result.get("过载线路数", 0),
+                            "过载线路": overload_result.get("过载线路详情", []),
+                            "母线电压": pf_result.get("母线电压", []),
+                            "线路潮流": pf_result.get("线路潮流", []),
+                            "综合指标": pf_result.get("综合指标", {}),
+                            "发电机输出": pf_result.get("发电机输出", []),
+                            "负载功率": pf_result.get("负载功率", []),
+                        }
+                        scenarios = [current_scenario]
+                    else:
+                        print("[问答式负荷扫描] 潮流不收敛")
+                        scenarios = [{
+                            "倍率": 1.0,
+                            "潮流收敛": False,
+                            "错误信息": pf_result.get("message", ""),
+                        }]
+
+                    result = self._assemble_interactive_result(scenarios, question, intent)
+                    return result
+
+            result = self._assemble_interactive_result(scenarios, question, intent)
+            return result
+
+        except Exception as e:
+            return {"success": False, "message": f"问答式负荷扫描执行失败: {str(e)}"}
+        finally:
+            if need_restore:
+                try:
+                    self.grid_tools.execute_tool("set_load_scale", factor=1.0)
+                    print("[问答式负荷扫描] 恢复负荷倍率至1.0")
+                except Exception as e:
+                    print(f"[问答式负荷扫描] 恢复负荷倍率失败: {e}")
+
+    def _assemble_interactive_result(self, scenarios: list, question: str, intent: Dict, factor: Optional[float] = None) -> Dict:
+        """组装问答式负荷扫描的最终结果（混合/查询/对比场景）
+
+        Args:
+            scenarios: 已完成的场景列表
+            question: 用户原始问题
+            intent: 用户意图检测结果
+            factor: 当前操作的倍率（None表示展示全部）
+
+        Returns:
+            Dict: 格式化的结果
+        """
+        if not scenarios:
+            return {"success": True, "message": "暂无负荷扫描数据", "场景日志": []}
+
+        msg_parts = []
+        display_scenarios = []
+
+        for s in scenarios:
+            display_item = {"倍率": s.get("倍率", 0), "潮流收敛": s.get("潮流收敛", True)}
+
+            if not s.get("潮流收敛", True):
+                msg_parts.append(f"{s['倍率']}倍时潮流不收敛")
+                display_item["错误信息"] = s.get("错误信息", "")
+            else:
+                overload_count = s.get("过载线路数", 0)
+                display_item["过载线路数"] = overload_count
+                display_item["总线路数"] = s.get("总线路数", 0)
+                display_item["过载线路"] = s.get("过载线路", [])
+
+                if intent["want_pf"]:
+                    display_item["综合指标"] = s.get("综合指标", {})
+                    display_item["母线电压"] = s.get("母线电压", [])
+                    display_item["线路潮流"] = s.get("线路潮流", [])
+                    display_item["发电机输出"] = s.get("发电机输出", [])
+                    display_item["负载功率"] = s.get("负载功率", [])
+
+                if intent["want_overload"] and not intent["want_pf"]:
+                    msg_parts.append(
+                        f"{s['倍率']}倍时{'出现' if overload_count > 0 else '无'}线路过载（{overload_count}条）"
+                    )
+                elif intent["want_pf"]:
+                    metrics = s.get("综合指标", {})
+                    loss = metrics.get("总有功损耗_MW", 0) if metrics else 0
+                    msg_parts.append(f"{s['倍率']}倍潮流收敛，有功损耗{loss:.2f}MW，过载{overload_count}条")
+                else:
+                    msg_parts.append(f"{s['倍率']}倍时过载{overload_count}条")
+
+            display_scenarios.append(display_item)
+
+        if factor is not None:
+            msg = f"{factor}倍负荷调整后：{'；'.join(msg_parts)}"
+        else:
+            msg = f"负荷扫描结果：{'；'.join(msg_parts)}"
+
+        return {
+            "success": True,
+            "message": msg,
+            "场景日志": display_scenarios,
+            "负荷扫描结果": display_scenarios,
+        }
+
     def _determine_grid_type(self, question: str) -> str:
         """根据问题关键词确定推荐的电网类型
         
@@ -871,7 +1287,10 @@ class PowerAgent:
             "data": self._format_result_data(tool_name, result),
             "summary": self._generate_summary(tool_name, result),
         }
-        
+
+        result.pop("_render_as", None)
+        result.pop("_load_factor", None)
+
         return answer
     
     def _get_analysis_type_name(self, tool_name: str) -> str:
@@ -903,6 +1322,7 @@ class PowerAgent:
             "_composite_n1_rank": "关键线路N-1复合分析",
             "_skill_voltage_correction": "电压修正Skill",
             "_skill_load_sweep": "负荷扫描Skill",
+            "_skill_load_sweep_step": "问答式负荷扫描",
         }
         return type_map.get(tool_name, tool_name)
     
@@ -1038,6 +1458,8 @@ class PowerAgent:
             }
         elif tool_name == "_skill_load_sweep":
             return result.get("负荷扫描结果", [])
+        elif tool_name == "_skill_load_sweep_step":
+            return result.get("负荷扫描结果", [])
         else:
             return result
     
@@ -1058,7 +1480,9 @@ class PowerAgent:
         
         if tool_name == "run_ac_power_flow":
             metrics = result.get("综合指标", {})
-            summaries.append("潮流计算完成")
+            load_factor = result.get("_load_factor")
+            prefix = f"{load_factor}倍负荷调整后，" if load_factor else ""
+            summaries.append(f"{prefix}潮流计算完成")
             if "平均电压(pu)" in metrics:
                 summaries.append(f"平均电压 {metrics['平均电压(pu)']:.4f} pu")
             if "线路最大负载率(%)" in metrics:
@@ -1083,8 +1507,10 @@ class PowerAgent:
             summaries.append(result.get("说明", ""))
             
         elif tool_name == "get_line_overload_summary":
+            load_factor = result.get("_load_factor")
+            prefix = f"{load_factor}倍负荷调整后，" if load_factor else ""
             summaries.append(
-                f"线路过载分析：{result.get('过载线路数', 0)}/{result.get('总线路数', 0)} 条线路过载"
+                f"{prefix}线路过载分析：{result.get('过载线路数', 0)}/{result.get('总线路数', 0)} 条线路过载"
             )
             
         elif tool_name == "get_voltage_violation_summary":
@@ -1184,6 +1610,16 @@ class PowerAgent:
                 parts.append(f"{d['倍率']}倍时过载{d['过载线路数']}条")
             summaries.append(f"负荷扫描Skill：{'，'.join(parts)}")
 
+        elif tool_name == "_skill_load_sweep_step":
+            details = result.get("负荷扫描结果", [])
+            parts = []
+            for d in details:
+                if not d.get("潮流收敛", True):
+                    parts.append(f"{d['倍率']}倍时潮流不收敛")
+                else:
+                    parts.append(f"{d['倍率']}倍时过载{d['过载线路数']}条")
+            summaries.append(f"问答式负荷扫描：{'，'.join(parts)}")
+
         return "；".join(summaries) if summaries else "分析完成"
     
     def get_available_tools(self) -> Dict:
@@ -1212,6 +1648,7 @@ class PowerAgent:
         """清空对话历史"""
         self.conversation_history = []
         self.question_counter = 0
+        self._load_sweep_state = {"active": False, "grid_type": None, "scenarios": []}
 
 
 def main():
