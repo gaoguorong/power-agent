@@ -12,6 +12,9 @@ from typing import Dict, Any, Optional, List
 from config import LLM_CONFIG
 from mcp_server import mcp_dispatch
 
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
+
 # 系统提示词 - 只保留角色、电网选择、输出格式
 # 工具清单通过 MCP tools/list 动态注入
 SYSTEM_PROMPT_TEMPLATE = """你是一个电网静态安全分析智能体的工具调度模块。
@@ -57,19 +60,30 @@ class LLMClient:
     """DeepSeek LLM客户端"""
     
     def __init__(self, api_key: str = None):
-        """初始化LLM客户端
+        """初始化LLM客户端（基于LangChain）
         
         Args:
             api_key: API密钥，为None时使用配置文件中的值
         """
-        self.api_key = api_key or LLM_CONFIG["api_key"]
-        self.api_url = LLM_CONFIG["api_url"]
         self.model = LLM_CONFIG["model"]
+        self.api_key = LLM_CONFIG["api_key"]
+        self.api_url = LLM_CONFIG["api_url_langchain"]
         self.temperature = LLM_CONFIG["temperature"]
         self.max_tokens = LLM_CONFIG["max_tokens"]
         self.timeout = LLM_CONFIG["timeout"]
+
         self.conversation_history = []
-    
+
+
+        self.llm = ChatOpenAI(
+            model=self.model,
+            base_url=self.api_url,
+            api_key=self.api_key,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            timeout=self.timeout,
+        )
+
     def _is_configured(self) -> bool:
         """检查API Key是否已正确配置
         
@@ -95,8 +109,8 @@ class LLMClient:
             )
             
             messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": question}
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=question)
             ]
             
             response = self._call_api(messages)
@@ -189,39 +203,19 @@ class LLMClient:
 10. **query_knowledge** - 查询电网知识
     参数：topic (可选)"""
 
-    def _call_api(self, messages: List[Dict]) -> str:
-        """调用DeepSeek API
+    def _call_api(self, messages: List[BaseMessage]) -> str:
+        """调用LLM（基于LangChain invoke）
         
         Args:
-            messages: 消息列表
+            messages: LangChain 消息列表（SystemMessage/HumanMessage等）
         
         Returns:
-            str: API响应内容
+            str: LLM响应文本内容
         """
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens
-        }
-        
-        response = requests.post(
-            self.api_url,
-            headers=headers,
-            json=payload,
-            timeout=self.timeout
-        )
-        
-        if response.status_code != 200:
-            raise Exception(f"API请求失败: {response.status_code} - {response.text}")
-        
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+        result = self.llm.invoke(messages)
+        if hasattr(result, "content"):
+            return result.content
+        return str(result)
     
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
         """解析LLM响应
@@ -273,31 +267,35 @@ class LLMClient:
         return text
     
     def chat(self, messages: List[Dict]) -> str:
-        """与LLM进行对话
+        """与LLM进行对话（基于LangChain）
         
         Args:
-            messages: 消息列表 [{role: "user", content: "..."}]
+            messages: 消息列表 [{role: "system"/"user"/"assistant", content: "..."}]
         
         Returns:
             str: LLM回复
         """
         if not self._is_configured():
             return "LLM未配置"
-        
+
         try:
-            response = self._call_api(messages)
+            lc_messages = []
+            for m in messages:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                if role == "system":
+                    lc_messages.append(SystemMessage(content=content))
+                elif role == "assistant":
+                    lc_messages.append(AIMessage(content=content))
+                else:
+                    lc_messages.append(HumanMessage(content=content))
+
+            response = self._call_api(lc_messages)
             return response
         except Exception as e:
             return f"调用失败: {str(e)}"
-    
-    def set_api_key(self, api_key: str) -> None:
-        """设置API Key
-        
-        Args:
-            api_key: 新的API Key
-        """
-        self.api_key = api_key
-    
+
+
     def get_status(self) -> Dict[str, Any]:
         """获取LLM客户端状态
         
@@ -307,5 +305,5 @@ class LLMClient:
         return {
             "configured": self._is_configured(),
             "api_url": self.api_url,
-            "model": self.model,
+            "model": self.model_name,
         }

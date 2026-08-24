@@ -563,7 +563,7 @@ class GridTools:
         
         try:
             # 先运行基准潮流
-            pp.runpp(self.net)
+            # pp.runpp(self.net)
             if not self.net.converged:
                 return {"success": False, "message": "基准潮流计算不收敛，无法进行N-1校核"}
             
