@@ -2,14 +2,13 @@ import json
 import sys
 import os
 import argparse
-import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from grid_tools import GridTools
-from config import AGENT_CONFIG, SUPPORTED_GRID_TYPES
+from tools.grid_tools import GridTools
+from config.ts_config import AGENT_CONFIG, SUPPORTED_GRID_TYPES
 import numpy as np
 import pandas as pd
 from skills.skill_def import VOLTAGE_CORRECTION_SKILL, LOAD_SWEEP_SKILL

@@ -7,10 +7,9 @@ LLM客户端模块 - DeepSeek大模型集成
 """
 
 import json
-import requests
-from typing import Dict, Any, Optional, List
-from config import LLM_CONFIG
-from mcp_server import mcp_dispatch
+from typing import Dict, Any, List
+from config.ts_config import LLM_CONFIG
+from mcp.mcp_server import mcp_dispatch
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage

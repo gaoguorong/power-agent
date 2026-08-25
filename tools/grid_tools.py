@@ -6,11 +6,11 @@
 
 import pandapower as pp
 import pandapower.networks as pn
-import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple
-import json
+from typing import Dict, List, Optional
 import copy
+
+from langchain_core.tools import tool
 
 
 class GridTools:
@@ -334,6 +334,99 @@ class GridTools:
                 # 计算综合指标
                 result["综合指标"] = self._calculate_overall_metrics()
                 
+                # 生成四个分析模块的明细（供前端渲染为独立表格，复用已有工具）
+                overload = self.get_line_overload_summary(skip_runpp=True)
+                if overload.get("success"):
+                    # 给每条明细增加状态列，按负载率从高到低显示
+                    details = []
+                    for ln in overload.get("过载线路详情", []):
+                        row = dict(ln)
+                        row["状态"] = "过载" if row.get("负载率(%)", 0) > 100 else ("重载" if row.get("负载率(%)", 0) >= 80 else "正常")
+                        details.append(row)
+                    # 如果没有任何过载，显示前5条正常
+                    if not details:
+                        for i, ln in enumerate(result["线路潮流"][:5]):
+                            details.append({
+                                "线路ID": ln.get("线路ID"),
+                                "名称": ln.get("名称"),
+                                "负载率(%)": ln.get("线路负载率"),
+                                "有功损失(MW)": ln.get("有功损失"),
+                                "状态": "正常",
+                            })
+                    details.sort(key=lambda x: x.get("负载率(%)", 0), reverse=True)
+                    result["线路过载分析"] = details[:10]
+
+                voltage_violation = self.get_voltage_violation_summary(skip_runpp=True)
+                if voltage_violation.get("success"):
+                    violations = [dict(b) for b in voltage_violation.get("越限母线详情", [])]
+                    for b in violations:
+                        b["状态"] = "越上限" if b.get("越限类型") == "越上限" else "越下限"
+                    if not violations:
+                        for i, b in enumerate(result["母线电压"][:5]):
+                            violations.append({
+                                "母线ID": b.get("母线ID"),
+                                "名称": b.get("名称"),
+                                "电压幅值(pu)": b.get("电压幅值(pu)"),
+                                "偏差量": 0,
+                                "状态": b.get("电压越限", "正常"),
+                            })
+                    result["电压越限分析"] = violations[:10]
+
+                loss = self.calculate_loss_analysis(skip_runpp=True)
+                if loss.get("success"):
+                    # 线路损耗明细 + 变压器损耗明细合为一张"网损分析"表（元件类型区分）
+                    loss_rows = []
+                    for d in loss.get("线路损耗详情", []):
+                        row = {
+                            "元件类型": "线路",
+                            "ID": d.get("线路ID"),
+                            "名称": d.get("名称"),
+                            "有功损耗(MW)": d.get("有功损耗(MW)"),
+                            "无功损耗(MVar)": d.get("无功损耗(MVar)"),
+                        }
+                        loss_rows.append(row)
+                    for d in loss.get("变压器损耗详情", []):
+                        row = {
+                            "元件类型": "变压器",
+                            "ID": d.get("变压器ID"),
+                            "名称": d.get("名称"),
+                            "有功损耗(MW)": d.get("有功损耗(MW)"),
+                            "无功损耗(MVar)": d.get("无功损耗(MVar)"),
+                        }
+                        loss_rows.append(row)
+                    # 按有功损耗从高到低排序，突出高损耗元件
+                    loss_rows.sort(key=lambda x: x.get("有功损耗(MW)", 0) or 0, reverse=True)
+                    result["网损分析明细"] = loss_rows
+                    # 汇总（保留一张 kv 卡片，但不展开为大表格）
+                    result["网损分析-汇总"] = {
+                        "总供电功率(MW)": loss.get("总供电功率(MW)", 0),
+                        "总负载功率(MW)": loss.get("总负载功率(MW)", 0),
+                        "总有功损耗(MW)": loss.get("总有功损耗(MW)", 0),
+                        "线路损耗(MW)": loss.get("线路损耗(MW)", 0),
+                        "变压器损耗(MW)": loss.get("变压器损耗(MW)", 0),
+                        "网损率(%)": loss.get("网损率(%)", 0),
+                    }
+
+                stability = self.check_voltage_stability(skip_runpp=True)
+                if stability.get("success"):
+                    # 复用 P-V 曲线明细作为表格
+                    pv_rows = []
+                    for r in stability.get("P-V曲线数据", []):
+                        pv_rows.append({
+                            "负载倍数": r.get("负载倍数"),
+                            "最小电压(pu)": r.get("最小电压(pu)", "-"),
+                            "是否收敛": "是" if r.get("收敛", False) else "否",
+                            "备注": r.get("说明", ""),
+                        })
+                    # 首行追加一个"稳定裕度"指标项
+                    summary_row = {
+                        "负载倍数": "→ 稳定裕度",
+                        "最小电压(pu)": stability.get("稳定裕度(%)", 0),
+                        "是否收敛": "%",
+                        "备注": stability.get("说明", ""),
+                    }
+                    result["电压稳定性分析"] = [summary_row] + pv_rows
+                
                 self.results_cache["ac_power_flow"] = result
                 return result
             else:
@@ -357,8 +450,8 @@ class GridTools:
             return df.loc[idx, col]
         # 尝试查找可能的替代列名
         col_map = {
-            "ploss_mw": ["p_loss_mw", "ploss", "p_from_mw", "p_to_mw"],
-            "qloss_mvar": ["q_loss_mvar", "qloss", "q_from_mvar", "q_to_mvar"],
+            "ploss_mw": ["pl_mw", "p_loss_mw", "ploss", "p_from_mw", "p_to_mw"],
+            "qloss_mvar": ["ql_mvar", "q_loss_mvar", "qloss", "q_from_mvar", "q_to_mvar"],
             "loading_percent": ["loading", "load_percent"],
         }
         if col in col_map:
@@ -497,50 +590,104 @@ class GridTools:
             return "正常"
     
     def _calculate_overall_metrics(self) -> Dict:
-        """计算综合指标
+        """计算综合指标（包含网损/过载/电压越限/电压稳定裕度四类汇总）
         
         Returns:
             Dict: 综合指标
         """
         metrics = {}
         
-        # 总有功损耗
-        total_ploss = 0
+        # ============== 网损分析汇总 ==============
+        total_line_ploss = 0.0
+        total_trafo_ploss = 0.0
         if len(self.net.res_line) > 0:
-            ploss_col = "ploss_mw"
-            if ploss_col in self.net.res_line.columns:
-                total_ploss += self.net.res_line[ploss_col].sum()
-            elif "p_loss_mw" in self.net.res_line.columns:
-                total_ploss += self.net.res_line["p_loss_mw"].sum()
+            for col_name in ["ploss_mw", "pl_mw", "p_loss_mw"]:
+                if col_name in self.net.res_line.columns:
+                    total_line_ploss += float(self.net.res_line[col_name].sum())
+                    break
         if len(self.net.res_trafo) > 0:
-            ploss_col = "ploss_mw"
-            if ploss_col in self.net.res_trafo.columns:
-                total_ploss += self.net.res_trafo[ploss_col].sum()
-            elif "p_loss_mw" in self.net.res_trafo.columns:
-                total_ploss += self.net.res_trafo["p_loss_mw"].sum()
+            for col_name in ["ploss_mw", "pl_mw", "p_loss_mw"]:
+                if col_name in self.net.res_trafo.columns:
+                    total_trafo_ploss += float(self.net.res_trafo[col_name].sum())
+                    break
+        total_ploss = total_line_ploss + total_trafo_ploss
         metrics["总有功损耗(MW)"] = round(total_ploss, 4)
+        metrics["线路损耗(MW)"] = round(total_line_ploss, 4)
+        metrics["变压器损耗(MW)"] = round(total_trafo_ploss, 4)
         
-        # 平均电压
+        total_gen = 0.0
+        if len(self.net.res_gen) > 0:
+            total_gen += float(self.net.res_gen["p_mw"].sum())
+        if len(self.net.res_ext_grid) > 0:
+            total_gen += float(self.net.res_ext_grid["p_mw"].sum())
+        metrics["总供电功率(MW)"] = round(total_gen, 4)
+        if len(self.net.res_load) > 0:
+            metrics["总负载功率(MW)"] = round(float(self.net.res_load["p_mw"].sum()), 4)
+        metrics["网损率(%)"] = round(total_ploss / total_gen * 100, 4) if total_gen > 0 else 0.0
+        
+        # ============== 电压越限分析汇总 ==============
+        vmin_default = 0.95
+        vmax_default = 1.05
         if len(self.net.res_bus) > 0:
-            metrics["平均电压(pu)"] = round(self.net.res_bus["vm_pu"].mean(), 4)
-            metrics["最低电压(pu)"] = round(self.net.res_bus["vm_pu"].min(), 4)
-            metrics["最高电压(pu)"] = round(self.net.res_bus["vm_pu"].max(), 4)
+            vm = self.net.res_bus["vm_pu"]
+            metrics["平均电压(pu)"] = round(float(vm.mean()), 4)
+            metrics["最低电压(pu)"] = round(float(vm.min()), 4)
+            metrics["最高电压(pu)"] = round(float(vm.max()), 4)
+            
+            low_v = int((vm < vmin_default).sum())
+            high_v = int((vm > vmax_default).sum())
+            total_v = len(vm)
+            metrics["母线总数"] = total_v
+            metrics["越下限母线数"] = low_v
+            metrics["越上限母线数"] = high_v
+            metrics["电压越限母线数"] = low_v + high_v
+            metrics["电压合格率(%)"] = round((total_v - low_v - high_v) / total_v * 100, 2) if total_v > 0 else 100.0
         
-        # 线路最大负载率
+        # ============== 线路过载分析汇总 ==============
+        line_loading = None
         if len(self.net.res_line) > 0:
-            loading_col = "loading_percent"
-            if loading_col in self.net.res_line.columns:
-                metrics["线路最大负载率(%)"] = round(
-                    self.net.res_line[loading_col].max(), 2
-                )
+            for col_name in ["loading_percent", "loading"]:
+                if col_name in self.net.res_line.columns:
+                    line_loading = self.net.res_line[col_name]
+                    break
+        if line_loading is not None and len(line_loading) > 0:
+            metrics["线路总数"] = len(line_loading)
+            metrics["线路最大负载率(%)"] = round(float(line_loading.max()), 2)
+            metrics["线路平均负载率(%)"] = round(float(line_loading.mean()), 2)
+            for th, label in [(80.0, "80%"), (90.0, "90%"), (100.0, "100%")]:
+                cnt = int((line_loading > th).sum())
+                metrics["超过%s负载线路数" % label] = cnt
+            metrics["过载线路数(>100%)"] = int((line_loading > 100.0).sum())
         
-        # 变压器最大负载率
+        trafo_loading = None
         if len(self.net.res_trafo) > 0:
-            loading_col = "loading_percent"
-            if loading_col in self.net.res_trafo.columns:
-                metrics["变压器最大负载率(%)"] = round(
-                    self.net.res_trafo[loading_col].max(), 2
-                )
+            for col_name in ["loading_percent", "loading"]:
+                if col_name in self.net.res_trafo.columns:
+                    trafo_loading = self.net.res_trafo[col_name]
+                    break
+        if trafo_loading is not None and len(trafo_loading) > 0:
+            metrics["变压器总数"] = len(trafo_loading)
+            metrics["变压器最大负载率(%)"] = round(float(trafo_loading.max()), 2)
+            metrics["过载变压器数(>100%)"] = int((trafo_loading > 100.0).sum())
+        
+        # ============== 电压稳定性分析（基于潮流结果的静态估算） ==============
+        # 裕度1：最低电压与下限的距离（越接近下限越危险）
+        if len(self.net.res_bus) > 0:
+            vmin_now = float(self.net.res_bus["vm_pu"].min())
+            metrics["最低电压距离下限(pu)"] = round(vmin_now - vmin_default, 4)
+            metrics["最低电压裕度(%)"] = round((vmin_now - vmin_default) / vmin_default * 100, 2) if vmin_default > 0 else 0.0
+            vmax_now = float(self.net.res_bus["vm_pu"].max())
+            metrics["最高电压距离上限(pu)"] = round(vmax_default - vmax_now, 4)
+            metrics["最高电压裕度(%)"] = round((vmax_default - vmax_now) / vmax_default * 100, 2) if vmax_default > 0 else 0.0
+            # 综合电压稳定裕度：取两侧裕度中的较小值（越小越接近越限）
+            margin_low = (vmin_now - vmin_default) / vmin_default * 100 if vmin_default > 0 else 0.0
+            margin_high = (vmax_default - vmax_now) / vmax_default * 100 if vmax_default > 0 else 0.0
+            metrics["综合电压裕度(%)"] = round(min(margin_low, margin_high), 2)
+        
+        # 裕度2：线路最大负载率距离100%越近，电压崩溃风险越大（经验指标）
+        if line_loading is not None and len(line_loading) > 0:
+            max_ld = float(line_loading.max())
+            metrics["重载线路裕度(%)"] = round(max(0.0, 100.0 - max_ld), 2)
         
         return metrics
     
@@ -921,11 +1068,12 @@ class GridTools:
             if "vector_group" in trafo.columns:
                 net.trafo["vector_group"] = trafo["vector_group"].fillna("Dyn")
 
-    def check_voltage_stability(self, max_load_factor: float = 2.0) -> Dict:
+    def check_voltage_stability(self, max_load_factor: float = 2.0, skip_runpp: bool = False) -> Dict:
         """电压稳定性分析（P-V曲线）
         
         Args:
             max_load_factor: 最大负载倍数
+            skip_runpp: 是否跳过初始潮流计算（当已有潮流结果时设为True）
         
         Returns:
             Dict: 电压稳定性结果
@@ -934,7 +1082,8 @@ class GridTools:
             return {"success": False, "message": "请先创建电网模型"}
         
         try:
-            pp.runpp(self.net)
+            if not skip_runpp:
+                pp.runpp(self.net)
             if not self.net.converged:
                 return {"success": False, "message": "潮流计算不收敛"}
             
@@ -1070,19 +1219,15 @@ class GridTools:
             overloaded_lines = []
             normal_lines = []
             
-            # 确定列名
-            loading_col = "loading_percent" if "loading_percent" in self.net.res_line.columns else None
-            ploss_col = "ploss_mw" if "ploss_mw" in self.net.res_line.columns else ("p_loss_mw" if "p_loss_mw" in self.net.res_line.columns else None)
-            
             if len(self.net.res_line) > 0:
                 for idx in self.net.res_line.index:
-                    loading = self.net.res_line.loc[idx, loading_col] if loading_col else 0
+                    loading = self._safe_get_col(self.net.res_line, idx, "loading_percent")
                     line_info = {
                         "线路ID": int(idx),
                         "名称": self.net.line.loc[idx, "name"],
                         "负载率(%)": round(loading, 2),
                         "有功损失(MW)": round(
-                            self.net.res_line.loc[idx, ploss_col] if ploss_col else 0, 4
+                            self._safe_get_col(self.net.res_line, idx, "ploss_mw"), 4
                         ),
                     }
                     
@@ -1094,16 +1239,16 @@ class GridTools:
             # 按负载率排序
             overloaded_lines.sort(key=lambda x: x["负载率(%)"], reverse=True)
             
-            # 计算统计
-            stats = {}
-            if loading_col and len(self.net.res_line) > 0:
-                stats["最大值(%)"] = round(self.net.res_line[loading_col].max(), 2)
-                stats["最小值(%)"] = round(self.net.res_line[loading_col].min(), 2)
-                stats["平均值(%)"] = round(self.net.res_line[loading_col].mean(), 2)
+            # 计算统计（从已收集的明细取，避免再次依赖列名）
+            all_loading = [ln["负载率(%)"] for ln in (overloaded_lines + normal_lines)]
+            if all_loading:
+                stats = {
+                    "最大值(%)": round(max(all_loading), 2),
+                    "最小值(%)": round(min(all_loading), 2),
+                    "平均值(%)": round(sum(all_loading) / len(all_loading), 2),
+                }
             else:
-                stats["最大值(%)"] = 0
-                stats["最小值(%)"] = 0
-                stats["平均值(%)"] = 0
+                stats = {"最大值(%)": 0, "最小值(%)": 0, "平均值(%)": 0}
             
             return {
                 "success": True,
@@ -1208,19 +1353,13 @@ class GridTools:
             if not self.net.converged:
                 return {"success": False, "message": "潮流计算不收敛"}
             
-            # 确定列名
-            line_ploss_col = "ploss_mw" if "ploss_mw" in self.net.res_line.columns else ("p_loss_mw" if "p_loss_mw" in self.net.res_line.columns else None)
-            line_qloss_col = "qloss_mvar" if "qloss_mvar" in self.net.res_line.columns else ("q_loss_mvar" if "q_loss_mvar" in self.net.res_line.columns else None)
-            trafo_ploss_col = "ploss_mw" if "ploss_mw" in self.net.res_trafo.columns else ("p_loss_mw" if "p_loss_mw" in self.net.res_trafo.columns else None)
-            trafo_qloss_col = "qloss_mvar" if "qloss_mvar" in self.net.res_trafo.columns else ("q_loss_mvar" if "q_loss_mvar" in self.net.res_trafo.columns else None)
-            
-            # 线路损耗
+            # 线路损耗（使用 _safe_get_col 兼容不同 pandapower 版本列名）
             line_loss = 0
             line_loss_detail = []
             if len(self.net.res_line) > 0:
                 for idx in self.net.res_line.index:
-                    ploss = self.net.res_line.loc[idx, line_ploss_col] if line_ploss_col else 0
-                    qloss = self.net.res_line.loc[idx, line_qloss_col] if line_qloss_col else 0
+                    ploss = self._safe_get_col(self.net.res_line, idx, "ploss_mw")
+                    qloss = self._safe_get_col(self.net.res_line, idx, "qloss_mvar")
                     line_loss += ploss
                     line_loss_detail.append({
                         "线路ID": int(idx),
@@ -1234,8 +1373,8 @@ class GridTools:
             trafo_loss_detail = []
             if len(self.net.res_trafo) > 0:
                 for idx in self.net.res_trafo.index:
-                    ploss = self.net.res_trafo.loc[idx, trafo_ploss_col] if trafo_ploss_col else 0
-                    qloss = self.net.res_trafo.loc[idx, trafo_qloss_col] if trafo_qloss_col else 0
+                    ploss = self._safe_get_col(self.net.res_trafo, idx, "ploss_mw")
+                    qloss = self._safe_get_col(self.net.res_trafo, idx, "qloss_mvar")
                     trafo_loss += ploss
                     trafo_loss_detail.append({
                         "变压器ID": int(idx),
@@ -1579,7 +1718,7 @@ class GridTools:
             Dict: 知识条目
         """
         try:
-            from config import KNOWLEDGE_BASE
+            from config.ts_config import KNOWLEDGE_BASE
             if not topic:
                 items = [{"key": k, **v} for k, v in KNOWLEDGE_BASE.items()]
                 return {"success": True, "message": "已返回全部知识条目", "知识条目": items}
@@ -1678,10 +1817,18 @@ class GridTools:
             if metric == "voltage" and element_type == "bus":
                 col, unit = "vm_pu", "pu"
             elif metric == "ploss_mw":
-                col = "ploss_mw" if "ploss_mw" in res.columns else ("p_loss_mw" if "p_loss_mw" in res.columns else None)
+                col = None
+                for c in ["ploss_mw", "pl_mw", "p_loss_mw"]:
+                    if c in res.columns:
+                        col = c
+                        break
                 unit = "MW"
             elif metric == "loading_percent":
-                col = "loading_percent" if "loading_percent" in res.columns else ("loading" if "loading" in res.columns else None)
+                col = None
+                for c in ["loading_percent", "loading"]:
+                    if c in res.columns:
+                        col = c
+                        break
                 unit = "%"
             else:
                 return {"success": False, "message": f"不支持的指标: {metric}"}

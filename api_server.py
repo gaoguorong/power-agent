@@ -13,16 +13,14 @@ import sys
 import os
 import mimetypes
 import argparse
-import numpy as np
-import pandas as pd
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from power_agent import PowerAgent
-from mcp_server import mcp_dispatch, _get_state, _json_default
-from config import AGENT_CONFIG
+from mcp.mcp_server import mcp_dispatch, _get_state, _json_default
+from config.ts_config import AGENT_CONFIG
 
 state = _get_state()
 

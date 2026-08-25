@@ -9,32 +9,14 @@
 """
 
 import json
-import uuid
-
-
-from grid_tools import GridTools
+import re
+from tools.grid_tools import GridTools
 from llm_client import LLMClient
 from skills.skill_def import VOLTAGE_CORRECTION_SKILL, LOAD_SWEEP_SKILL
 from LoadSweepSession import LoadSweepSession
 from typing import Dict, Any, Optional, List
 
-from langgraph.store.memory import InMemoryStore
-
-import re
-
-_SKILL_CHECKS = {
-    "violations_exist":      lambda state: state.get("viol", {}).get("越限母线数", 0) > 0,
-    "correction_succeeded":  lambda state: state.get("corr", {}).get("剩余越限数", -1) == 0,
-}
-
-# 问答式负荷扫描场景中保留的潮流结果明细字段（字段名 → 默认值）
-_PF_DETAIL_FIELDS = {
-    "母线电压": [], "线路潮流": [], "综合指标": {},
-    "发电机输出": [], "负载功率": [],
-}
-
-
-
+from config.scene_pf import _PF_DETAIL_FIELDS, SKIP_RUNPP_TOOLS, LOAD_KW, BATCH_KW, FOLLOWUP_KW, RESCAN_KW
 
 
 class PowerAgent:
@@ -45,16 +27,6 @@ class PowerAgent:
     2. 将分析结果格式化输出
     3. 支持多轮对话和问题编号管理
     """
-    
-    SKIP_RUNPP_TOOLS = {"get_line_overload_summary", "get_voltage_violation_summary", "calculate_loss_analysis"}
-
-    # 问答式负荷扫描关键词集
-    LOAD_KW = ("负荷", "加载", "倍率", "倍", "水平", "调高", "调大",
-               "加大", "增大", "增加", "提升", "放大", "提负荷", "加负荷")
-    BATCH_KW = ("扫描", "全扫", "全部倍率", "所有倍率", "批量")
-    FOLLOWUP_KW = ("对比", "比较", "结果", "情况", "有哪些", "出现", "存在",
-                   "过载", "概况", "怎么样", "如何", "多少")
-    RESCAN_KW = ("重新扫描", "重新分析", "再扫描", "再分析")
     
     def __init__(self, use_llm: bool = True, api_key: str = None):
         """初始化智能体
@@ -70,6 +42,7 @@ class PowerAgent:
         self.current_grid_type = None
         self._initialized = False
         self._last_used_llm = False
+        self._last_pf_check = (False, None)
         self._load_sweep_session = LoadSweepSession()
     
     def get_llm_status(self) -> Dict:
@@ -116,7 +89,7 @@ class PowerAgent:
             can_reuse_pf = (
                 has_recent_pf 
                 and pf_grid_type == grid_type
-                and tool_name in self.SKIP_RUNPP_TOOLS
+                and tool_name in SKIP_RUNPP_TOOLS
             )
             
             # 初始化电网（如果需要）
@@ -286,7 +259,7 @@ class PowerAgent:
         tool_params = parse_result.get("tool_params", {})
         
         # 需要潮流结果作为前置条件的工具（但不一定支持 skip_runpp）
-        query_tools_need_pf = self.SKIP_RUNPP_TOOLS | {
+        query_tools_need_pf = SKIP_RUNPP_TOOLS | {
             "run_n1_security_check",
             "run_short_circuit_analysis",
             "check_voltage_stability",
@@ -301,7 +274,7 @@ class PowerAgent:
         
         if has_recent_pf:
             # 如果历史中已有潮流结果，且工具支持 skip_runpp，则设置该参数
-            if tool_name in self.SKIP_RUNPP_TOOLS:
+            if tool_name in SKIP_RUNPP_TOOLS:
                 if not tool_params.get("skip_runpp", False):
                     tool_params["skip_runpp"] = True
                     parse_result["tool_params"] = tool_params
@@ -903,13 +876,13 @@ class PowerAgent:
         """
         q = question.lower()
         # 会话已激活时，只有明确要求重新扫描才视为批量请求，其余"扫描"字样按追问处理
-        # if any(kw in q for kw in self.RESCAN_KW):
+        # if any(kw in q for kw in RESCAN_KW):
         #     return False
-        # if any(kw in q for kw in self.BATCH_KW) and not self._load_sweep_session.active:
+        # if any(kw in q for kw in BATCH_KW) and not self._load_sweep_session.active:
         #     return False
-        has_load_kw = any(kw in q for kw in self.LOAD_KW)
+        has_load_kw = any(kw in q for kw in LOAD_KW)
         if self._load_sweep_session.active:
-            return has_load_kw or any(kw in q for kw in self.FOLLOWUP_KW)
+            return has_load_kw or any(kw in q for kw in FOLLOWUP_KW)
         return has_load_kw and self._extract_load_factor(question) is not None
 
     @staticmethod
@@ -1190,12 +1163,24 @@ class PowerAgent:
             Any: 格式化后的数据
         """
         if tool_name == "run_ac_power_flow":
-            return {
-                "综合指标": result.get("综合指标", {}),
+            data = {
                 "线路潮流": result.get("线路潮流", [])[:5],
                 "母线电压": result.get("母线电压", [])[:5],
-                "发电机输出": result.get("发电机输出", []),
+                "变压器潮流": result.get("变压器潮流", [])[:5],
+                "负载功率": result.get("负载功率", [])[:5],
             }
+            # 4 个分析模块明细（仅在有内容时显示，渲染为独立表格）
+            if result.get("电压稳定性分析"):
+                data["电压稳定性分析"] = result["电压稳定性分析"]
+            if result.get("线路过载分析"):
+                data["线路过载分析"] = result["线路过载分析"]
+            if result.get("电压越限分析"):
+                data["电压越限分析"] = result["电压越限分析"]
+            if result.get("网损分析明细"):
+                data["网损分析"] = result["网损分析明细"]
+            if result.get("网损分析-汇总"):
+                data["网损分析-汇总"] = result["网损分析-汇总"]
+            return data
         elif tool_name == "run_n1_security_check":
             return {
                 "统计信息": result.get("统计信息", {}),

@@ -18,7 +18,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from power_agent import PowerAgent
-from grid_tools import GridTools
+from tools.grid_tools import GridTools
 
 
 def example_1_basic_usage():
