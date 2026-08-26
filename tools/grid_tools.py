@@ -320,113 +320,37 @@ class GridTools:
             pp.runpp(self.net, **kwargs)
             
             if self.net.converged:
-                # 收集结果
+                # 基础结果：只保留收敛状态、核心汇总、原始明细。
+                # ⚠️ 重要：此处不再预计算"过载分析/电压越限/网损/稳定性"等分析结果，
+                # 这些分析必须通过对应的独立原子工具（get_line_overload_summary /
+                # get_voltage_violation_summary / calculate_loss_analysis 等）调用，
+                # 确保 Graph 的每一步工作流可显式追踪、可审计。
+                metrics = self._calculate_overall_metrics()
                 result = {
                     "success": True,
                     "message": "潮流计算收敛",
-                    "线路潮流": self._get_line_results(),
-                    "变压器潮流": self._get_trafo_results(),
-                    "母线电压": self._get_bus_results(),
-                    "发电机输出": self._get_gen_results(),
-                    "负载功率": self._get_load_results(),
+                    "收敛状态": self.net.converged,
+                    "拓扑概览": {
+                        "总线数": len(self.net.bus),
+                        "线路数": len(self.net.line),
+                        "变压器数": len(self.net.trafo),
+                        "发电机数": len(self.net.gen) + len(self.net.ext_grid),
+                        "负荷数": len(self.net.load),
+                    },
+                    "核心指标": {
+                        "总供电功率(MW)": metrics.get("总供电功率(MW)", 0),
+                        "总负荷功率(MW)": metrics.get("总负荷功率(MW)", 0),
+                        "总有功损耗(MW)": metrics.get("总有功损耗(MW)", 0),
+                        "网损率(%)": metrics.get("网损率(%)", 0),
+                        "最大线路负载率(%)": metrics.get("最大线路负载率(%)", 0),
+                        "最低母线电压(pu)": metrics.get("最低母线电压(pu)", 0),
+                        "最高母线电压(pu)": metrics.get("最高母线电压(pu)", 0),
+                    },
+                    "说明": "当前仅返回潮流计算收敛状态与核心汇总指标；"
+                            "如需要线路过载详情请调 get_line_overload_summary；"
+                            "如需要电压越限详情请调 get_voltage_violation_summary；"
+                            "如需要完整明细可访问本会话缓存的 net.res_line / net.res_bus。"
                 }
-                
-                # 计算综合指标
-                result["综合指标"] = self._calculate_overall_metrics()
-                
-                # 生成四个分析模块的明细（供前端渲染为独立表格，复用已有工具）
-                overload = self.get_line_overload_summary(skip_runpp=True)
-                if overload.get("success"):
-                    # 给每条明细增加状态列，按负载率从高到低显示
-                    details = []
-                    for ln in overload.get("过载线路详情", []):
-                        row = dict(ln)
-                        row["状态"] = "过载" if row.get("负载率(%)", 0) > 100 else ("重载" if row.get("负载率(%)", 0) >= 80 else "正常")
-                        details.append(row)
-                    # 如果没有任何过载，显示前5条正常
-                    if not details:
-                        for i, ln in enumerate(result["线路潮流"][:5]):
-                            details.append({
-                                "线路ID": ln.get("线路ID"),
-                                "名称": ln.get("名称"),
-                                "负载率(%)": ln.get("线路负载率"),
-                                "有功损失(MW)": ln.get("有功损失"),
-                                "状态": "正常",
-                            })
-                    details.sort(key=lambda x: x.get("负载率(%)", 0), reverse=True)
-                    result["线路过载分析"] = details[:10]
-
-                voltage_violation = self.get_voltage_violation_summary(skip_runpp=True)
-                if voltage_violation.get("success"):
-                    violations = [dict(b) for b in voltage_violation.get("越限母线详情", [])]
-                    for b in violations:
-                        b["状态"] = "越上限" if b.get("越限类型") == "越上限" else "越下限"
-                    if not violations:
-                        for i, b in enumerate(result["母线电压"][:5]):
-                            violations.append({
-                                "母线ID": b.get("母线ID"),
-                                "名称": b.get("名称"),
-                                "电压幅值(pu)": b.get("电压幅值(pu)"),
-                                "偏差量": 0,
-                                "状态": b.get("电压越限", "正常"),
-                            })
-                    result["电压越限分析"] = violations[:10]
-
-                loss = self.calculate_loss_analysis(skip_runpp=True)
-                if loss.get("success"):
-                    # 线路损耗明细 + 变压器损耗明细合为一张"网损分析"表（元件类型区分）
-                    loss_rows = []
-                    for d in loss.get("线路损耗详情", []):
-                        row = {
-                            "元件类型": "线路",
-                            "ID": d.get("线路ID"),
-                            "名称": d.get("名称"),
-                            "有功损耗(MW)": d.get("有功损耗(MW)"),
-                            "无功损耗(MVar)": d.get("无功损耗(MVar)"),
-                        }
-                        loss_rows.append(row)
-                    for d in loss.get("变压器损耗详情", []):
-                        row = {
-                            "元件类型": "变压器",
-                            "ID": d.get("变压器ID"),
-                            "名称": d.get("名称"),
-                            "有功损耗(MW)": d.get("有功损耗(MW)"),
-                            "无功损耗(MVar)": d.get("无功损耗(MVar)"),
-                        }
-                        loss_rows.append(row)
-                    # 按有功损耗从高到低排序，突出高损耗元件
-                    loss_rows.sort(key=lambda x: x.get("有功损耗(MW)", 0) or 0, reverse=True)
-                    result["网损分析明细"] = loss_rows
-                    # 汇总（保留一张 kv 卡片，但不展开为大表格）
-                    result["网损分析-汇总"] = {
-                        "总供电功率(MW)": loss.get("总供电功率(MW)", 0),
-                        "总负载功率(MW)": loss.get("总负载功率(MW)", 0),
-                        "总有功损耗(MW)": loss.get("总有功损耗(MW)", 0),
-                        "线路损耗(MW)": loss.get("线路损耗(MW)", 0),
-                        "变压器损耗(MW)": loss.get("变压器损耗(MW)", 0),
-                        "网损率(%)": loss.get("网损率(%)", 0),
-                    }
-
-                stability = self.check_voltage_stability(skip_runpp=True)
-                if stability.get("success"):
-                    # 复用 P-V 曲线明细作为表格
-                    pv_rows = []
-                    for r in stability.get("P-V曲线数据", []):
-                        pv_rows.append({
-                            "负载倍数": r.get("负载倍数"),
-                            "最小电压(pu)": r.get("最小电压(pu)", "-"),
-                            "是否收敛": "是" if r.get("收敛", False) else "否",
-                            "备注": r.get("说明", ""),
-                        })
-                    # 首行追加一个"稳定裕度"指标项
-                    summary_row = {
-                        "负载倍数": "→ 稳定裕度",
-                        "最小电压(pu)": stability.get("稳定裕度(%)", 0),
-                        "是否收敛": "%",
-                        "备注": stability.get("说明", ""),
-                    }
-                    result["电压稳定性分析"] = [summary_row] + pv_rows
-                
                 self.results_cache["ac_power_flow"] = result
                 return result
             else:

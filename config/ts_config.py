@@ -215,10 +215,11 @@ KNOWLEDGE_BASE = {
 
 # LLM配置
 LLM_CONFIG = {
-    "api_key": "sk-ws-H.EPHHMEM.zBxO.MEUCIGXgqOSrHVwn4CTlEx4X_9ErgdPiPsR2rXJ3dQK_LptjAiEAq8_rTEGMWSXsjpdFKvl7o-OcNhJelj2XLoVQcOKAki4",  # 替换为你的API Key
+    # "api_key": "sk-ws-H.EPHHMEM.zBxO.MEUCIGXgqOSrHVwn4CTlEx4X_9ErgdPiPsR2rXJ3dQK_LptjAiEAq8_rTEGMWSXsjpdFKvl7o-OcNhJelj2XLoVQcOKAki4",
+    "api_key": "sk-ws-H.EYXPPDH.BPlV.MEUCIQDRJsy4np4I5rsb6uKV42tOk6U041n22-dkuXxuXzaDzwIgBLGd8wjpekNj1ipSwM_8LrvBMle7ybT5OUUaeDCXyJY",# 替换为你的API Key
     "api_url": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",  # 替换为你的大模型API URL
     "api_url_langchain": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen3.8-max",
+    "model": "deepseek-v4-pro-0813",
     "temperature": 0.1,  # 低温度以获得更稳定的工具选择
     "max_tokens": 1024,
     "timeout": 30,

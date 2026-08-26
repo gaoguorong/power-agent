@@ -233,41 +233,27 @@ def calculate_loss_analysis(session_id: str = "default") -> Dict:
         return {"success": False, "message": f"损耗分析失败: {str(e)}"}
 
 
-# ============================================================
-# 复合工具：兜底标准链路，80%场景一步到位
-# ============================================================
-
-
 @tool
-def run_full_analysis(grid_type: str = "case30",
-                       overload_threshold: float = 80.0,
-                       vmin_pu: float = 0.95,
-                       vmax_pu: float = 1.05,
-                       top_n: int = 5,
-                       session_id: str = "default") -> Dict:
-    """一键完整分析：创建指定电网 → 交流潮流 → 线路过载分析 → 电压越限分析 → 综合风险报告
-    当用户没有明确指定分步操作、而是要求整体分析电网时，优先调用此工具。
+def reset_grid_session(session_id: str = "default") -> Dict:
+    """彻底重置当前会话的电网计算状态，清空所有缓存的电网模型、潮流结果、缩放倍率，
+    恢复到未创建任何电网的初始干净状态。
+    当用户明确要求"清空重来"、"恢复初始"、"不要之前的电网了"、"重新开始分析"，
+    或表达要放弃之前的计算上下文时调用此工具。
+    【注意】本工具仅清空计算状态，对话消息历史仍然保留，用户可以看到之前的聊天记录。
     Args:
-        grid_type: 电网类型 case9/case14/case30/case39/case57/case118/case300/simple
-        overload_threshold: 过载阈值(%)
-        vmin_pu: 电压下限
-        vmax_pu: 电压上限
-        top_n: 风险报告展示前N项
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
-        r = gt.create_test_grid(grid_type=grid_type)
-        if not r.get("success"): return r
-        r = gt.run_ac_power_flow()
-        if not r.get("success"): return r
-        r = gt.generate_risk_report(vmin_pu=vmin_pu, vmax_pu=vmax_pu,
-                                     overload_threshold=overload_threshold,
-                                     top_n=top_n)
-        return r
+        if session_id in _sessions:
+            del _sessions[session_id]
+        return {
+            "success": True,
+            "message": "当前会话的电网计算状态已彻底重置，"
+                       "所有缓存的模型、结果、负荷倍率均已清空。"
+                       "接下来如需要计算，请重新指定电网类型创建新模型。"
+        }
     except Exception as e:
-        return {"success": False, "message": f"完整分析失败: {str(e)}"}
-
+        return {"success": False, "message": f"重置会话失败: {str(e)}"}
 
 # ============================================================
 # 对外导出的工具清单（langchain_v1直接用）
@@ -285,10 +271,7 @@ ATOMIC_TOOLS = [
     analyze_with_outage,
     get_grid_topology,
     calculate_loss_analysis,
+    reset_grid_session,
 ]
 
-COMPOSITE_TOOLS = [
-    run_full_analysis,
-]
-
-ALL_TOOLS = ATOMIC_TOOLS + COMPOSITE_TOOLS
+ALL_TOOLS = ATOMIC_TOOLS
