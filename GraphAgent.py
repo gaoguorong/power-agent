@@ -124,7 +124,8 @@ if __name__ == "__main__":
     cfg_lisi     = {"configurable": {"thread_id": "sess-lisi-demo-001"}}
 
     graph_agent = GraphAgent()
-    agent = graph_agent.graph.compile(checkpointer=graph_agent.memory_saver)
+    graph = graph_agent.graph
+    agent = graph.compile(checkpointer=graph_agent.memory_saver)
 
     zs_r1 = agent.invoke(
         {"messages": [HumanMessage("基于30节点电网模型进行潮流计算/30节点潮流计算，分析是否出现线路过载?分析是否出现电压越限?")]},
