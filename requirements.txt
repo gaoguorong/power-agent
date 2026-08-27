@@ -1,4 +1,25 @@
+# ================= 核心计算依赖 =================
 pandapower==3.4.0
 pandas>=2.0.0
 numpy>=1.24.0
-requests>=2.28.0
+
+# ================= LLM / LangChain =================
+langchain-openai>=0.2.0
+langchain-core>=0.3.0
+langgraph>=0.2.60
+langgraph-checkpoint-sqlite>=0.2.0
+
+# ================= FastAPI 后端 =================
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+sse-starlette>=2.1.0          # SSE 流式推送
+python-multipart>=0.0.9
+python-dotenv>=1.0.0
+aiofiles>=24.0.0
+
+# ================= MySQL 业务库 =================
+SQLAlchemy>=2.0.0
+aiomysql>=0.2.0               # 异步MySQL驱动
+pymysql>=1.1.0                # 兜底同步驱动（可兼容使用）

@@ -1,5 +1,8 @@
-import os
-import sys, io, warnings, logging
+# -*- coding: utf-8 -*-
+"""
+GraphAgent：LangGraph 状态机定义（agent → inject_session → tools → agent …）
+只管图结构和节点逻辑；对外由 services/graph_service.py 驱动。
+"""
 from typing import Annotated, TypedDict
 from langchain_core.messages import AnyMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -8,40 +11,20 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
-from llm_client import LLMClient
-from tools.langchain_tool import ALL_TOOLS, query_knowledge
+from llm_client import create_llm
+from tools.langchain_tool import ALL_TOOLS
 
 from config.SYSTEM_PROMPT import SYSTEM_PROMPT
 
-os.environ["PYTHONUTF8"]         = "1"
-os.environ["PYTHONIOENCODING"]   = "utf-8:replace"
-os.environ["NO_COLOR"]           = "1"
-os.environ["ANSI_COLORS_DISABLED"] = "1"
-os.environ["TQDM_DISABLE"]       = "1"
-os.environ["LANG"]               = "zh_CN.UTF-8"
+# 全进程共用的 LLM 实例（模块加载时创建一次）
+LLM = create_llm()
 
-warnings.filterwarnings("ignore")
-logging.getLogger("langchain").setLevel(logging.WARNING)
-logging.getLogger("langgraph").setLevel(logging.WARNING)
-logging.getLogger("pandapower").setLevel(logging.WARNING)
-
-if sys.platform.startswith("win"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
-    except Exception:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-
-
-llm_client = LLMClient()
-llm = llm_client.llm
 
 class GraphAgent:
 
     def __init__(self):
 
-        self.llm_with_tools = llm.bind_tools(ALL_TOOLS, tool_choice="auto", strict=True)
+        self.llm_with_tools = LLM.bind_tools(ALL_TOOLS, tool_choice="auto", strict=True)
         self.memory_saver = MemorySaver()
         self.tool_node = ToolNode(ALL_TOOLS)
 

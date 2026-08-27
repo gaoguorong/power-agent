@@ -346,10 +346,9 @@ class GridTools:
                         "最低母线电压(pu)": metrics.get("最低母线电压(pu)", 0),
                         "最高母线电压(pu)": metrics.get("最高母线电压(pu)", 0),
                     },
-                    "说明": "当前仅返回潮流计算收敛状态与核心汇总指标；"
-                            "如需要线路过载详情请调 get_line_overload_summary；"
-                            "如需要电压越限详情请调 get_voltage_violation_summary；"
-                            "如需要完整明细可访问本会话缓存的 net.res_line / net.res_bus。"
+                    "说明": "潮流计算已完成，本次任务到此结束。"
+                            "除非用户在问题中明确要求过载/电压越限分析，"
+                            "否则不要再调用其他分析工具。"
                 }
                 self.results_cache["ac_power_flow"] = result
                 return result

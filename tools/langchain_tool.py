@@ -31,7 +31,12 @@ def create_test_grid(grid_type: str = "case30", session_id: str = "default") -> 
     """
     try:
         gt = get_gt_obj(session_id)
-        return gt.create_test_grid(grid_type=grid_type)
+        result = gt.create_test_grid(grid_type=grid_type)
+        # 补丁：创建成功后把电网类型记到 GridTools 实例上，
+        # 方便 session_service.get_session_grid_meta 存 MySQL，服务重启后恢复
+        if result and result.get("success"):
+            setattr(gt, "_patched_grid_type", grid_type)
+        return result
     except Exception as e:
         return {"success": False, "message": f"创建电网失败: {str(e)}"}
 
@@ -39,7 +44,7 @@ def create_test_grid(grid_type: str = "case30", session_id: str = "default") -> 
 @tool
 def run_ac_power_flow(algorithm: str = "nr", max_iteration: int = 30,
                       tolerance: float = 1e-6, session_id: str = "default") -> Dict:
-    """运行交流潮流计算，计算后会缓存结果，后续分析工具可直接使用
+    """运行交流潮流计算，结果会缓存；仅当用户明确要求过载/电压等进一步分析时才调用其他工具
     Args:
         algorithm: 计算算法，nr(牛顿拉夫逊)/iwamoto_nr/fdbx/gs
         max_iteration: 最大迭代次数

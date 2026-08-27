@@ -3,7 +3,14 @@
 电网分析智能体配置文件
 
 定义各种默认参数和常量
+【注意】敏感信息(API Key/数据库密码)从环境变量读取，
+       复制 .env.example 为 .env 填写实际值即可。
 """
+import os
+from dotenv import load_dotenv
+
+# 加载 .env 文件（如果存在则覆盖系统环境变量）
+load_dotenv(override=True)
 
 # 默认电网类型
 DEFAULT_GRID_TYPE = "case9"
@@ -203,24 +210,32 @@ KNOWLEDGE_BASE = {
     },
 }
 
-# # LLM配置
-# LLM_CONFIG = {
-#     "api_key": "sk-c7879ad31bae4aec825a92781f4f2a02",  # 替换为你的API Key
-#     "api_url": "https://api.deepseek.com/v1/chat/completions",  # 替换为你的大模型API URL
-#     "model": "deepseek-chat",
-#     "temperature": 0.1,  # 低温度以获得更稳定的工具选择
-#     "max_tokens": 1024,
-#     "timeout": 30,
-# }
-
-# LLM配置
+# LLM配置（全部从环境变量读取，禁止硬编码密钥）
 LLM_CONFIG = {
-    # "api_key": "sk-ws-H.EPHHMEM.zBxO.MEUCIGXgqOSrHVwn4CTlEx4X_9ErgdPiPsR2rXJ3dQK_LptjAiEAq8_rTEGMWSXsjpdFKvl7o-OcNhJelj2XLoVQcOKAki4",
-    "api_key": "sk-ws-H.EYXPPDH.BPlV.MEUCIQDRJsy4np4I5rsb6uKV42tOk6U041n22-dkuXxuXzaDzwIgBLGd8wjpekNj1ipSwM_8LrvBMle7ybT5OUUaeDCXyJY",# 替换为你的API Key
-    "api_url": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",  # 替换为你的大模型API URL
-    "api_url_langchain": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-    "model": "deepseek-v4-pro-0813",
-    "temperature": 0.1,  # 低温度以获得更稳定的工具选择
-    "max_tokens": 1024,
-    "timeout": 30,
+    "api_key": os.getenv("LLM_API_KEY", "").strip(),
+    "api_url": os.getenv("LLM_API_URL", "").strip(),
+    "api_url_langchain": os.getenv("LLM_API_URL_LANGCHAIN", "").strip(),
+    "model": os.getenv("LLM_MODEL", "deepseek-v4-pro-0813").strip(),
+    "temperature": float(os.getenv("LLM_TEMPERATURE", "0.1")),
+    "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "2048")),
+    "timeout": int(os.getenv("LLM_TIMEOUT", "60")),
+}
+
+# 服务配置
+SERVER_CONFIG = {
+    "host": os.getenv("SERVER_HOST", "0.0.0.0"),
+    "port": int(os.getenv("SERVER_PORT", "8000")),
+    "cors_origins": [
+        x.strip()
+        for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+        if x.strip()
+    ],
+}
+
+# MySQL 业务数据库配置
+DATABASE_CONFIG = {
+    "mysql_url": os.getenv(
+        "MYSQL_URL",
+        "mysql+aiomysql://root:123456@127.0.0.1:3306/power_agent?charset=utf8"
+    ),
 }

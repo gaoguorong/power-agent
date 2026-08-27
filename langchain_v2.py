@@ -30,13 +30,12 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
-from llm_client import LLMClient
+from llm_client import create_llm
 from tools.langchain_tool import ALL_TOOLS, query_knowledge
 
 
 
-llm_client = LLMClient()
-llm = llm_client.llm
+llm = create_llm()
 
 llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
