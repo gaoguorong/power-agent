@@ -14,9 +14,9 @@ import asyncio
 import traceback
 from typing import Any, Dict, List, Optional, AsyncGenerator
 
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage, SystemMessage
 
-from GraphAgent import GraphAgent
+from agents.graph_agent import GraphAgent
 from tools import langchain_tool
 from tools.langchain_tool import ALL_TOOLS
 
@@ -56,7 +56,7 @@ class GraphService:
         session_id: str,
         question: str,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        ga = self._graph_agent
+        graph_agent = self._graph_agent
         cfg = {"configurable": {"thread_id": session_id}}
         state: Dict[str, Any] = {
             # 历史消息 + 本轮新问题（多轮对话不丢上下文）
@@ -71,7 +71,7 @@ class GraphService:
         try:
             for _ in range(MAX_TOOL_ROUNDS):
                 # 1) LLM 决策：要么直接回答，要么给出要调用的工具清单
-                ai_msg = await asyncio.to_thread(ga.agent_node, state)
+                ai_msg = await asyncio.to_thread(graph_agent.agent_node, state)
                 ai_msg = ai_msg["messages"][-1]
                 state["messages"].append(ai_msg)
 
@@ -96,7 +96,7 @@ class GraphService:
                     }}
 
                 # 4) 把 session_id 注入每个工具的 args（多会话电网隔离靠它）
-                await asyncio.to_thread(ga.inject_session_node, state, cfg)
+                await asyncio.to_thread(graph_agent.inject_session_node, state, cfg)
 
                 # 5) 真正执行工具，结果回填给状态机 + 播报给前端
                 tool_msgs = await asyncio.to_thread(self._execute_tools, ai_msg.tool_calls)
@@ -154,10 +154,41 @@ class GraphService:
     # ==============================================================
 
     def get_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """返回该会话的完整消息历史（前端可读格式）"""
-        return [_message_to_dict(m)
+        """返回该会话的完整消息历史（前端可渲染格式）。
+        聚合成和 SSE 流式结束时一致的形状：
+        每条 user 消息后跟一条 assistant 消息（工具调用合并进 tool_runs），
+        这样点历史会话恢复出来的界面和实时聊天时看到的一样。
+        """
+        return _messages_to_frontend_format(
+            self._session_messages.get(session_id, [])
+        )
+
+    # ==============================================================
+    # 2.5 消息历史持久化：内存 ⇄ MySQL（重启后恢复聊天记录靠它）
+    # ==============================================================
+
+    def has_session_messages(self, session_id: str) -> bool:
+        """内存里有没有该会话的消息历史"""
+        return bool(self._session_messages.get(session_id))
+
+    def dump_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """把内存中的消息历史序列化成可存 JSON 的结构"""
+        return [_message_to_persist(m)
                 for m in self._session_messages.get(session_id, [])
                 if isinstance(m, BaseMessage)]
+
+    def restore_session_messages(self, session_id: str, items: List[Dict[str, Any]]) -> None:
+        """从持久化数据恢复消息历史到内存（还原成 LangChain Message 对象）"""
+        msgs = []
+        for it in items:
+            try:
+                m = _persist_to_message(it)
+            except Exception:
+                m = None
+            if m is not None:
+                msgs.append(m)
+        if msgs:
+            self._session_messages[session_id] = msgs
 
     # ==============================================================
     # 3. 电网对象状态管理
@@ -214,20 +245,6 @@ class GraphService:
 # 模块内小工具函数
 # ==============================================================
 
-def _message_to_dict(m: BaseMessage) -> Dict[str, Any]:
-    """把 LangChain Message 转成前端可读的 dict"""
-    item: Dict[str, Any] = {
-        "role": _msg_role(m),
-        "content": m.content if isinstance(m.content, (str, list)) else str(m.content),
-    }
-    if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
-        item["tool_calls"] = m.tool_calls
-    if isinstance(m, ToolMessage):
-        item["tool_name"] = getattr(m, "name", "")
-        item["tool_call_id"] = getattr(m, "tool_call_id", "")
-    return item
-
-
 def _msg_role(m: BaseMessage) -> str:
     """LangChain Message 类型 → 前端认识的 role 字符串"""
     if isinstance(m, HumanMessage):
@@ -272,3 +289,107 @@ def _safe_preview(obj: Any, max_len: int = 300) -> str:
         return text if len(text) <= max_len else text[:max_len] + "..."
     except Exception:
         return "[无法预览]"
+
+
+def _messages_to_frontend_format(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+    """LangChain 消息历史 → 前端 ChatMessage[] 结构。
+
+    原始历史里一次问答 = user + ai(tool_calls) + tool*N + ai(正文)，
+    前端实时聊天渲染时是把工具调用都挂在一条 assistant 消息的 tool_runs 上，
+    所以这里同样做聚合，恢复出来的界面才和实时聊天一致。
+    """
+    items: List[Dict[str, Any]] = []
+    current_ai: Optional[Dict[str, Any]] = None  # 当前正在聚合的 assistant 消息
+
+    for m in messages:
+        if not isinstance(m, BaseMessage):
+            continue
+
+        if isinstance(m, HumanMessage):
+            items.append({"role": "user", "content": m.content or ""})
+            current_ai = None
+            continue
+
+        if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+            # 带工具调用的 AI 消息：开（或复用）一条 assistant，把调用挂到 tool_runs
+            if current_ai is None:
+                current_ai = {"role": "assistant", "content": "", "tool_runs": []}
+                items.append(current_ai)
+            for tc in m.tool_calls:
+                current_ai.setdefault("tool_runs", []).append({
+                    "name": tc.get("name", ""),
+                    "input": tc.get("args") or {},
+                    "output": None,
+                    "status": "running",
+                    # 内部字段：给下一条 ToolMessage 配对用，前端用不到但无害
+                    "_call_id": tc.get("id", ""),
+                })
+            continue
+
+        if isinstance(m, ToolMessage):
+            # 工具结果：按 tool_call_id 回填到最近一条 running 的同名调用
+            call_id = getattr(m, "tool_call_id", "")
+            output = _parse_json_if_possible(m.content)
+            if current_ai is not None:
+                for run in reversed(current_ai.get("tool_runs", [])):
+                    if run.get("_call_id") == call_id and run["status"] == "running":
+                        run["output"] = output
+                        run["status"] = "ok"
+                        break
+            continue
+
+        if isinstance(m, AIMessage):
+            # 纯正文回答：填进正在聚合的 assistant；没有就新开一条
+            content = m.content if isinstance(m.content, (str, list)) else str(m.content)
+            if not content:
+                continue
+            if current_ai is not None:
+                current_ai["content"] = content
+                current_ai = None
+            else:
+                items.append({"role": "assistant", "content": content})
+            continue
+        # SystemMessage 等不参与前端渲染，跳过
+    return items
+
+
+def _message_to_persist(m: BaseMessage) -> Dict[str, Any]:
+    """LangChain Message → 可 JSON 序列化的持久化结构（存 MySQL）"""
+    item: Dict[str, Any] = {
+        "t": _msg_role(m),
+        "content": m.content if isinstance(m.content, (str, list)) else str(m.content),
+    }
+    if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+        # 保留 id：恢复后要和 ToolMessage.tool_call_id 配对，LLM 才认得这是完整的工具调用链
+        item["tool_calls"] = [
+            {
+                "name": tc.get("name"),
+                "args": tc.get("args") or {},
+                "id": tc.get("id"),
+                "type": tc.get("type", "tool_call"),
+            }
+            for tc in m.tool_calls
+        ]
+    if isinstance(m, ToolMessage):
+        item["name"] = getattr(m, "name", "")
+        item["tool_call_id"] = getattr(m, "tool_call_id", "")
+    return item
+
+
+def _persist_to_message(item: Dict[str, Any]) -> Optional[BaseMessage]:
+    """持久化结构 → LangChain Message（从 MySQL 恢复时用）"""
+    role = item.get("t")
+    content = item.get("content", "")
+    if role == "user":
+        return HumanMessage(content=content)
+    if role == "assistant":
+        return AIMessage(content=content, tool_calls=item.get("tool_calls") or [])
+    if role == "tool":
+        return ToolMessage(
+            content=content,
+            name=item.get("name", ""),
+            tool_call_id=item.get("tool_call_id", ""),
+        )
+    if role == "system":
+        return SystemMessage(content=content)
+    return None

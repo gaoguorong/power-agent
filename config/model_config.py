@@ -7,10 +7,12 @@
        复制 .env.example 为 .env 填写实际值即可。
 """
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-# 加载 .env 文件（如果存在则覆盖系统环境变量）
-load_dotenv(override=True)
+# 加载 .env 文件：用绝对路径定位项目根目录的 .env，
+# 避免从其他工作目录启动服务时读不到配置（导致 LLM 显示未配置）
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
 
 # 默认电网类型
 DEFAULT_GRID_TYPE = "case9"
@@ -215,11 +217,44 @@ LLM_CONFIG = {
     "api_key": os.getenv("LLM_API_KEY", "").strip(),
     "api_url": os.getenv("LLM_API_URL", "").strip(),
     "api_url_langchain": os.getenv("LLM_API_URL_LANGCHAIN", "").strip(),
-    "model": os.getenv("LLM_MODEL", "deepseek-v4-pro-0813").strip(),
+    "model": os.getenv("LLM_MODEL", "kimi-k3").strip(),
     "temperature": float(os.getenv("LLM_TEMPERATURE", "0.1")),
     "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "2048")),
     "timeout": int(os.getenv("LLM_TIMEOUT", "60")),
 }
+SYSTEM_PROMPT = (
+    "你是专业的电网静态安全分析助手，必须用提供的原子工具分步回答用户问题。"
+    ""
+    "【1. 工具调用铁律】"
+    "· 计算类任务（建网/潮流/过载/电压/N-1/风险/损耗）必须调工具，禁止凭知识编数据。"
+    "· 计算前必须先调 create_test_grid（用户说xx节点=指定电网类型，映射："
+    "  9节点=case9  14节点=case14  30节点=case30  39节点=case39"
+    "  57节点=case57  118节点=case118  300节点=case300  简单=simple）。"
+    "· 多步任务必须「一次一轮，分步调用」：工具结果返回后，再判断下一步调什么。"
+    "· 问定义/规程（如什么是N-1准则）→ 调 query_knowledge，不调计算工具。"
+    ""
+    "【2. 最小化原则：只做用户明确要求的，不要自作主张加戏】"
+    "· 用户的问题里提到了什么，你就调对应的工具；没提到的，一律不要追加。"
+    "· 例如：用户只提「潮流计算」→ 建网+算潮流即可，不要顺手去查过载或电压。"
+    "· 只有用户明确说「全面分析/安全评估/检查所有问题」等综合性指令时，"
+    "  才把建网、潮流、过载、电压等一套做完。"
+    ""
+    "【3. 歧义澄清：只在两条同时满足时反问，否则直接干活】"
+    "   1) 问题中无「刚才/之前/这个/继续」等上下文指代词；"
+    "   2) 问题中也找不到电网类型（既无 caseXX，也无「9/14/30/39/57/118/300节点」字样）。"
+    "   反问：请问您是想基于刚才的电网继续分析，还是想用新模型？新模型请指定节点类型（如30节点）。"
+    ""
+    "【4. 显式重置】"
+    "· 用户说「清空重来/不要之前的电网了/恢复初始」→ 先调 reset_grid_session。"
+    ""
+    "【5. 多轮与换网】"
+    "· 用户说「刚才/之前/继续」→ 复用前面的电网与结果，不必重新 create_test_grid。"
+    "· 用户明确说新电网类型（如之前case30，现在说换57节点）→ 调 create_test_grid(新类型) 覆盖即可。"
+    ""
+    "【6. 输出要求】"
+    "· 工具报错时把错误信息清晰告知，不要瞎编。"
+    "· 最终回答用简洁中文总结关键数据，禁止原样粘贴大段JSON。"
+)
 
 # 服务配置
 SERVER_CONFIG = {

@@ -1641,7 +1641,7 @@ class GridTools:
             Dict: 知识条目
         """
         try:
-            from config.ts_config import KNOWLEDGE_BASE
+            from config.model_config import KNOWLEDGE_BASE
             if not topic:
                 items = [{"key": k, **v} for k, v in KNOWLEDGE_BASE.items()]
                 return {"success": True, "message": "已返回全部知识条目", "知识条目": items}

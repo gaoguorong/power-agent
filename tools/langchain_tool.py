@@ -2,25 +2,20 @@ from langchain_core.tools import tool
 from typing import Dict, List, Optional
 from tools.grid_tools import GridTools
 
-
 _sessions: Dict[str, GridTools] = {}
-
 
 def get_gt_obj(session_id: str = "default") -> GridTools:
     if session_id not in _sessions:
         _sessions[session_id] = GridTools()
     return _sessions[session_id]
 
-
 def _pop_session_id(kwargs: Dict) -> tuple[str, Dict]:
     sid = kwargs.pop("session_id", "default")
     return sid, kwargs
 
-
 # ============================================================
 # 原子工具薄壳：每个@tool对应GridTools.execute_tool的一个key
 # ============================================================
-
 
 @tool
 def create_test_grid(grid_type: str = "case30", session_id: str = "default") -> Dict:
