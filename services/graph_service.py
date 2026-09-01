@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, AsyncGenerator
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage, SystemMessage
 
 from agents.graph_agent import GraphAgent
+from schemas.tool_result import normalize_tool_result
 from tools import langchain_tool
 from tools.langchain_tool import ALL_TOOLS
 
@@ -122,23 +123,23 @@ class GraphService:
             }}
 
     def _execute_tools(self, tool_calls: List[Dict[str, Any]]) -> List[ToolMessage]:
-        """按名字找到工具逐个执行，结果统一包成 ToolMessage"""
+        """按名字找到工具逐个执行，结果统一经 normalize_tool_result 翻译成标准结构再包 ToolMessage"""
         results: List[ToolMessage] = []
         for tc in tool_calls:
             name = tc["name"]
             args = tc.get("args") or {}
             tool = self._tools_by_name.get(name)
             if tool is None:
-                text = f"错误：未知工具 '{name}'"
+                # 未知工具：同样走标准结构（按系统异常处理）
+                normalized = normalize_tool_result(
+                    RuntimeError(f"未知工具 '{name}'"), name)
             else:
                 try:
                     raw = tool.invoke(args)
-                    if isinstance(raw, (dict, list)):
-                        text = json.dumps(raw, ensure_ascii=False, indent=2)
-                    else:
-                        text = str(raw)
                 except Exception as exc:
-                    text = f"工具执行异常: {type(exc).__name__}: {exc}"
+                    raw = exc  # 异常不就地拼字符串，交给 normalize 统一翻译
+                normalized = normalize_tool_result(raw, name)
+            text = json.dumps(normalized, ensure_ascii=False, indent=2, default=str)
             results.append(ToolMessage(content=text, name=name, tool_call_id=tc.get("id", "")))
         return results
 

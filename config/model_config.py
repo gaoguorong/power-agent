@@ -3,16 +3,8 @@
 电网分析智能体配置文件
 
 定义各种默认参数和常量
-【注意】敏感信息(API Key/数据库密码)从环境变量读取，
-       复制 .env.example 为 .env 填写实际值即可。
+所有配置直接写在此文件，便于统一管理。
 """
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-
-# 加载 .env 文件：用绝对路径定位项目根目录的 .env，
-# 避免从其他工作目录启动服务时读不到配置（导致 LLM 显示未配置）
-load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
 
 # 默认电网类型
 DEFAULT_GRID_TYPE = "case9"
@@ -212,15 +204,15 @@ KNOWLEDGE_BASE = {
     },
 }
 
-# LLM配置（全部从环境变量读取，禁止硬编码密钥）
+# LLM配置
 LLM_CONFIG = {
-    "api_key": os.getenv("LLM_API_KEY", "").strip(),
-    "api_url": os.getenv("LLM_API_URL", "").strip(),
-    "api_url_langchain": os.getenv("LLM_API_URL_LANGCHAIN", "").strip(),
-    "model": os.getenv("LLM_MODEL", "kimi-k3").strip(),
-    "temperature": float(os.getenv("LLM_TEMPERATURE", "0.1")),
-    "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "2048")),
-    "timeout": int(os.getenv("LLM_TIMEOUT", "60")),
+    "api_key": "sk-ws-H.EXIXEPM.JbDn.MEQCIAdbYMQfMaitX5XRyTTC2qepM-RhujISJKjMGQkRmFVgAiAxV6eWpZMjzopYG6ceG7SEYCtJM4AGqXMTb3KQUPhQsA",
+    "api_url": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "api_url_langchain": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.8-27b",
+    "temperature": 0.1,
+    "max_tokens": 2048,
+    "timeout": 60,
 }
 SYSTEM_PROMPT = (
     "你是专业的电网静态安全分析助手，必须用提供的原子工具分步回答用户问题。"
@@ -258,19 +250,15 @@ SYSTEM_PROMPT = (
 
 # 服务配置
 SERVER_CONFIG = {
-    "host": os.getenv("SERVER_HOST", "0.0.0.0"),
-    "port": int(os.getenv("SERVER_PORT", "8000")),
+    "host": "0.0.0.0",
+    "port": 8000,
     "cors_origins": [
-        x.strip()
-        for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
-        if x.strip()
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ],
 }
 
 # MySQL 业务数据库配置
 DATABASE_CONFIG = {
-    "mysql_url": os.getenv(
-        "MYSQL_URL",
-        "mysql+aiomysql://root:123456@127.0.0.1:3306/power_agent?charset=utf8"
-    ),
+    "mysql_url": "mysql+aiomysql://root:optsearch.1234@127.0.0.1:3306/power_agent?charset=utf8",
 }
