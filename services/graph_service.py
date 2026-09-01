@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional, AsyncGenerator
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage, SystemMessage
 
 from agents.graph_agent import GraphAgent
+from executors.base import ToolExecutionRequest
+from executors.registry import build_default_registry
 from schemas.tool_result import normalize_tool_result
 from tools import langchain_tool
 from tools.langchain_tool import ALL_TOOLS
@@ -41,8 +43,10 @@ class GraphService:
 
     def __init__(self):
         self._graph_agent = GraphAgent()
-        # 工具按名字索引，执行 tool_calls 时用
+        # 工具按名字索引，未注册工具的兜底执行通道用
         self._tools_by_name = {t.name: t for t in ALL_TOOLS}
+        # 工具注册表：已登记的工具优先走适配器统一通道（带超时等防护）
+        self._registry = build_default_registry()
         # session_id → 完整消息历史（页面刷新恢复聊天的唯一数据源）
         self._session_messages: Dict[str, List[BaseMessage]] = {}
         print("[GraphService] 已就绪，消息历史存进程内存（重启丢失）")
@@ -123,22 +127,38 @@ class GraphService:
             }}
 
     def _execute_tools(self, tool_calls: List[Dict[str, Any]]) -> List[ToolMessage]:
-        """按名字找到工具逐个执行，结果统一经 normalize_tool_result 翻译成标准结构再包 ToolMessage"""
+        """逐个执行工具，结果统一为标准结构再包 ToolMessage。
+
+        调度顺序：注册表优先 → 未登记的回退到 LangChain 工具 → 都没有才算未知工具。
+        注册表通道自带超时等防护；回退通道保持原行为，兼容未迁移的工具。
+        """
         results: List[ToolMessage] = []
         for tc in tool_calls:
             name = tc["name"]
             args = tc.get("args") or {}
-            tool = self._tools_by_name.get(name)
-            if tool is None:
-                # 未知工具：同样走标准结构（按系统异常处理）
-                normalized = normalize_tool_result(
-                    RuntimeError(f"未知工具 '{name}'"), name)
+
+            entry = self._registry.get(name)
+            if entry is not None:
+                # 已注册：走适配器统一通道，超时取注册表里登记的值
+                definition, _adapter = entry
+                normalized = self._registry.execute(ToolExecutionRequest(
+                    tool_id=name,
+                    parameters=args,
+                    timeout_seconds=definition.timeout_seconds,
+                ))
             else:
-                try:
-                    raw = tool.invoke(args)
-                except Exception as exc:
-                    raw = exc  # 异常不就地拼字符串，交给 normalize 统一翻译
-                normalized = normalize_tool_result(raw, name)
+                # 未注册：回退老路（LangChain 工具），行为与接入前完全一致
+                tool = self._tools_by_name.get(name)
+                if tool is None:
+                    normalized = normalize_tool_result(
+                        RuntimeError(f"未知工具 '{name}'"), name)
+                else:
+                    try:
+                        raw = tool.invoke(args)
+                    except Exception as exc:
+                        raw = exc  # 异常交给 normalize 统一翻译
+                    normalized = normalize_tool_result(raw, name)
+
             text = json.dumps(normalized, ensure_ascii=False, indent=2, default=str)
             results.append(ToolMessage(content=text, name=name, tool_call_id=tc.get("id", "")))
         return results

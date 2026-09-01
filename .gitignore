@@ -38,6 +38,9 @@ data/
 *.sqlite3
 *.sqlite
 
+# ============ 前端 ============
+node_modules/
+
 # ============ IDE ============
 .idea/
 .vscode/
