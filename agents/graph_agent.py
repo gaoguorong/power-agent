@@ -5,6 +5,8 @@ GraphAgent：LangGraph 状态机定义（agent → inject_session → tools → 
 
 演示：python -m agents.graph_agent
 """
+import os
+import logging
 from typing import Annotated, TypedDict
 from langchain_core.messages import AnyMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -20,6 +22,17 @@ from config.model_config import SYSTEM_PROMPT
 
 # 全进程共用的 LLM 实例（模块加载时创建一次）
 LLM = create_llm()
+
+# LLM 交互留痕：用最简 logging 把每轮发给大模型的输入/输出追加到 data/llm_io.log
+# （data/ 已在 .gitignore 忽略）。注意：光 logger.info 不落盘，必须挂一个 FileHandler。
+_llm_logger = logging.getLogger("llm_io")
+_llm_logger.setLevel(logging.INFO)
+if not _llm_logger.handlers:                 # 防止 --reload 重复挂 handler
+    os.makedirs("data", exist_ok=True)
+    _fh = logging.FileHandler("data/llm_io.log", encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _llm_logger.addHandler(_fh)
+    _llm_logger.propagate = False
 
 
 class GraphAgent:
@@ -55,7 +68,10 @@ class GraphAgent:
     # ============================================================
     def agent_node(self,state: AgentState):
         messages_with_sys = [("system", SYSTEM_PROMPT)] + state["messages"]
+        sid = state.get("session_id", "default")
+        _llm_logger.info("[INPUT ] session=%s | %s", sid, messages_with_sys)
         response = self.llm_with_tools.invoke(messages_with_sys)
+        _llm_logger.info("[OUTPUT] session=%s | %s", sid, response)
         return {"messages": [response]}
 
     # ============================================================

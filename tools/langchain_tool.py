@@ -37,6 +37,26 @@ def create_test_grid(grid_type: str = "case30", session_id: str = "default") -> 
 
 
 @tool
+def load_grid_from_file(file_path: str, session_id: str = "default") -> Dict:
+    """从文件加载真实电网模型（pandapower 存储格式），加载后即可用潮流/N-1/过载/电压越限等工具分析。
+    支持同一个模型的三种存储形式 .json/.p/.pickle/.xlsx/.xls；
+    若只给文件名，会自动在项目根目录和“实际电网数据”目录下查找。
+    Args:
+        file_path: 电网模型文件路径或文件名，例如 "nankao_net.json" 或 "实际电网数据/nankao_net.p"
+        session_id: 会话ID，用于多会话隔离
+    """
+    try:
+        gt = get_gt_obj(session_id)
+        result = gt.load_grid_from_file(file_path=file_path)
+        # 记录来源文件，供服务重启后恢复（区别于内置算例的 grid_type）
+        if result and result.get("success"):
+            setattr(gt, "_patched_grid_file", result.get("文件路径") or file_path)
+        return result
+    except Exception as e:
+        return {"success": False, "message": f"加载电网模型失败: {str(e)}"}
+
+
+@tool
 def run_ac_power_flow(algorithm: str = "nr", max_iteration: int = 30,
                       tolerance: float = 1e-6, session_id: str = "default") -> Dict:
     """运行交流潮流计算，结果会缓存；仅当用户明确要求过载/电压等进一步分析时才调用其他工具
@@ -208,6 +228,29 @@ def analyze_with_outage(element_type: str, element_ids: List[int],
 
 
 @tool
+def set_element_status(element_type: str, element_ids: List[int],
+                       in_service: bool = False, session_id: str = "default") -> Dict:
+    """真实修改元件投运状态（断开/投入），改动持久生效于当前会话电网，影响后续所有分析。
+    与 analyze_with_outage（假想退出、只影响本次分析、不改电网）不同：
+    用户要“真的断开某线路/变压器再重新算潮流、看断开前后对比”时用本工具。
+    典型流程：set_element_status(断开) -> run_ac_power_flow -> get_line_overload_summary；
+    复原：再次调用并传 in_service=True。
+    Args:
+        element_type: line/trafo/bus/gen/load/ext_grid
+        element_ids: 要改状态的元件引用列表（索引或名称），例如 [25]
+        in_service: True=投入运行，False=退出运行(断开)
+        session_id: 会话ID
+    """
+    try:
+        gt = get_gt_obj(session_id)
+        return gt.set_element_status(element_type=element_type,
+                                     element_ids=element_ids,
+                                     in_service=in_service)
+    except Exception as e:
+        return {"success": False, "message": f"修改元件投运状态失败: {str(e)}"}
+
+
+@tool
 def get_grid_topology(session_id: str = "default") -> Dict:
     """获取当前电网的拓扑结构信息（母线-线路连接关系、分区信息）
     Args:
@@ -260,6 +303,7 @@ def reset_grid_session(session_id: str = "default") -> Dict:
 # ============================================================
 ATOMIC_TOOLS = [
     create_test_grid,
+    load_grid_from_file,
     run_ac_power_flow,
     run_n1_security_check,
     get_line_overload_summary,
@@ -269,6 +313,7 @@ ATOMIC_TOOLS = [
     query_knowledge,
     list_grid_elements,
     analyze_with_outage,
+    set_element_status,
     get_grid_topology,
     calculate_loss_analysis,
     reset_grid_session,

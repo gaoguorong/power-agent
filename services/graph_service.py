@@ -11,6 +11,7 @@ GraphAgent 单例服务：手动逐步驱动状态机，产出 SSE 事件给前�
 """
 import json
 import asyncio
+import math
 import traceback
 from typing import Any, Dict, List, Optional, AsyncGenerator
 
@@ -93,7 +94,9 @@ class GraphService:
                 for tc in ai_msg.tool_calls:
                     args = tc.get("args") or {}
                     tool_runs.append({"name": tc["name"], "input": args,
-                                      "output": None, "status": "running"})
+                                      "output": None, "status": "running",
+                                      # 内部字段：按 tool_call_id 精确回填结果，前端用不到但无害
+                                      "_call_id": tc.get("id", "")})
                     yield {"event": "tool_start", "data": {
                         "name": tc["name"],
                         "input": _safe_preview(args),
@@ -108,7 +111,8 @@ class GraphService:
                 state["messages"].extend(tool_msgs)
                 for tm in tool_msgs:
                     output = _parse_json_if_possible(tm.content)
-                    _fill_tool_run(tool_runs, tm.name, output)
+                    _fill_tool_run(tool_runs, tm.name, output,
+                                   getattr(tm, "tool_call_id", ""))
                     yield {"event": "tool_end", "data": {
                         "name": tm.name,
                         "output_preview": _safe_preview(output, 200),
@@ -159,6 +163,9 @@ class GraphService:
                         raw = exc  # 异常交给 normalize 统一翻译
                     normalized = normalize_tool_result(raw, name)
 
+            # 清洗 NaN/Infinity：Starlette 的 JSONResponse 用 allow_nan=False，
+            # 非有限浮点会让刷新恢复历史时序列化报 ValueError
+            normalized = _sanitize_non_finite(normalized)
             text = json.dumps(normalized, ensure_ascii=False, indent=2, default=str)
             results.append(ToolMessage(content=text, name=name, tool_call_id=tc.get("id", "")))
         return results
@@ -245,6 +252,11 @@ class GraphService:
         if grid_type:
             meta["last_grid_type"] = grid_type
 
+        # 文件加载的真实电网：记录来源路径，重启后按路径重新加载
+        grid_file = getattr(gt, "_patched_grid_file", None) or getattr(gt, "_source_file", None)
+        if grid_file:
+            meta["last_grid_file"] = grid_file
+
         try:
             net = getattr(gt, "net", None)
             orig_p = getattr(gt, "_load_original_p_mw", None)
@@ -277,8 +289,20 @@ def _msg_role(m: BaseMessage) -> str:
     return type(m).__name__.lower()
 
 
-def _fill_tool_run(tool_runs: List[Dict[str, Any]], name: str, output: Any) -> None:
-    """把执行结果回填到 tool_runs 里最近一条同名 running 记录"""
+def _fill_tool_run(tool_runs: List[Dict[str, Any]], name: str, output: Any,
+                   call_id: str = "") -> None:
+    """把执行结果回填到 tool_runs 里对应的 running 记录。
+
+    优先按 tool_call_id 精确配对：同一工具在一轮里被并行调用多次时（如连续
+    load_grid_from_file 两个文件），只按名字配对会把结果填错块（输入 .json
+    却显示加载了 .p）。call_id 缺失时才退回按名字配对最近一条 running。
+    """
+    if call_id:
+        for run in reversed(tool_runs):
+            if run.get("_call_id") == call_id and run["status"] == "running":
+                run["output"] = _safe_preview(output)
+                run["status"] = "ok"
+                return
     for run in reversed(tool_runs):
         if run["name"] == name and run["status"] == "running":
             run["output"] = _safe_preview(output)
@@ -286,14 +310,31 @@ def _fill_tool_run(tool_runs: List[Dict[str, Any]], name: str, output: Any) -> N
             return
 
 
+def _sanitize_non_finite(obj: Any) -> Any:
+    """递归把 NaN / Infinity 等非有限浮点替换成 None。
+
+    工具结果里偶尔会算出 NaN（如孤立线路的负载率均值），Python json.dumps
+    默认会把它写成字面量 NaN 存起来；刷新恢复历史时 FastAPI 的 JSONResponse
+    （allow_nan=False）再序列化就会抛 ValueError。统一在边界清洗成 None。
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _sanitize_non_finite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_non_finite(v) for v in obj]
+    return obj
+
+
 def _parse_json_if_possible(text: Any) -> Any:
-    """工具输出是 JSON 字符串就解析成 dict（前端展示更好看），否则原样返回"""
+    """工具输出是 JSON 字符串就解析成 dict（前端展示更好看），否则原样返回。
+    解析后统一清洗 NaN/Infinity，兼容数据库里已存了 NaN 字面量的历史记录。"""
     if isinstance(text, str):
         try:
-            return json.loads(text)
+            return _sanitize_non_finite(json.loads(text))
         except Exception:
             return text
-    return text
+    return _sanitize_non_finite(text)
 
 
 def _safe_preview(obj: Any, max_len: int = 300) -> str:

@@ -9,6 +9,8 @@ import pandapower.networks as pn
 import numpy as np
 from typing import Dict, List, Optional
 import copy
+import os
+
 
 from langchain_core.tools import tool
 
@@ -67,7 +69,90 @@ class GridTools:
             return {"success": True, "message": "电网模型创建成功", "grid_info": grid_info}
         except Exception as e:
             return {"success": False, "message": f"创建电网失败: {str(e)}"}
-    
+
+    def load_grid_from_file(self, file_path: str) -> Dict:
+        """从文件加载真实电网模型（pandapower 存储格式）
+
+        支持同一个模型的三种存储形式：
+        - .json          -> pp.from_json
+        - .p / .pickle   -> pp.from_pickle
+        - .xlsx / .xls   -> pp.from_excel
+
+        Args:
+            file_path: 电网模型文件路径。可为绝对路径；若只给文件名或相对路径，
+                       会自动在项目根目录及“实际电网数据”目录下查找。
+
+        Returns:
+            Dict: 加载结果信息（含电网规模概览，母线清单过大时不返回）
+        """
+
+
+        try:
+            resolved = self._resolve_grid_file_path(file_path)
+            if resolved is None:
+                return {"success": False,
+                        "message": f"找不到电网模型文件: {file_path}"
+                                   f"（支持 .json/.p/.pickle/.xlsx/.xls）"}
+
+            ext = os.path.splitext(resolved)[1].lower()
+            if ext == ".json":
+                net = pp.from_json(resolved)
+            elif ext in (".p", ".pickle"):
+                net = pp.from_pickle(resolved)
+            elif ext in (".xlsx", ".xls"):
+                net = pp.from_excel(resolved)
+            else:
+                return {"success": False,
+                        "message": f"不支持的文件格式: {ext}"
+                                   f"（仅支持 .json/.p/.pickle/.xlsx/.xls）"}
+
+            self.net = net
+            self.results_cache = {}
+            self._load_original_p_mw = None
+            self._load_original_q_mvar = None
+            # 记录来源文件，供服务重启后按路径恢复（区别于内置算例的 grid_type）
+            self._source_file = resolved
+
+            grid_info = self._get_grid_info()
+            # 真实电网上千个母线，完整清单会刷屏，这里只给规模概览
+            grid_info.pop("母线列表", None)
+            try:
+                grid_info["电压等级(kV)"] = sorted(
+                    {round(float(v), 1) for v in net.bus["vn_kv"].tolist()}
+                )
+            except Exception:
+                pass
+            return {"success": True,
+                    "message": f"真实电网模型加载成功: {os.path.basename(resolved)}",
+                    "文件路径": resolved,
+                    "grid_info": grid_info}
+        except Exception as e:
+            return {"success": False, "message": f"加载电网模型失败: {str(e)}"}
+
+    def _resolve_grid_file_path(self, file_path: str):
+        """解析电网模型文件路径。
+
+        绝对路径 / 相对当前工作目录能命中的，直接返回；
+        否则在项目根目录与“实际电网数据”目录下按文件名查找。
+        找不到返回 None。
+        """
+
+        if not file_path:
+            return None
+        if os.path.isfile(file_path):
+            return os.path.abspath(file_path)
+
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates = [
+            os.path.join(project_root, file_path),
+            os.path.join(project_root, "实际电网数据", file_path),
+            os.path.join(project_root, "实际电网数据", os.path.basename(file_path)),
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+        return None
+
     def _create_simple_grid(self) -> pp.pandapowerNet:
         """创建简单的测试电网
         
@@ -339,12 +424,12 @@ class GridTools:
                     },
                     "核心指标": {
                         "总供电功率(MW)": metrics.get("总供电功率(MW)", 0),
-                        "总负荷功率(MW)": metrics.get("总负荷功率(MW)", 0),
+                        "总负荷功率(MW)": metrics.get("总负荷功率(MW)", metrics.get("总负载功率(MW)", 0)),
                         "总有功损耗(MW)": metrics.get("总有功损耗(MW)", 0),
                         "网损率(%)": metrics.get("网损率(%)", 0),
-                        "最大线路负载率(%)": metrics.get("最大线路负载率(%)", 0),
-                        "最低母线电压(pu)": metrics.get("最低母线电压(pu)", 0),
-                        "最高母线电压(pu)": metrics.get("最高母线电压(pu)", 0),
+                        "最大线路负载率(%)": metrics.get("最大线路负载率(%)", metrics.get("线路最大负载率(%)", 0)),
+                        "最低母线电压(pu)": metrics.get("最低母线电压(pu)", metrics.get("最低电压(pu)", 0)),
+                        "最高母线电压(pu)": metrics.get("最高母线电压(pu)", metrics.get("最高电压(pu)", 0)),
                     },
                     "说明": "潮流计算已完成，本次任务到此结束。"
                             "除非用户在问题中明确要求过载/电压越限分析，"
@@ -1528,6 +1613,8 @@ class GridTools:
                         item["所在母线"] = bmap.get(int(df.loc[i, "bus"]), "?")
                     elif et == "bus":
                         item["电压等级(kV)"] = round(float(df.loc[i, "vn_kv"]), 2)
+                    if "in_service" in df.columns:
+                        item["是否投运"] = bool(df.loc[i, "in_service"])
                     items.append(item)
                 result["元件列表"][et] = items
             return result
@@ -1999,6 +2086,76 @@ class GridTools:
             return res
         except Exception as e:
             return {"success": False, "message": f"运行方式分析失败: {str(e)}"}
+
+    def set_element_status(self, element_type: str, element_ids: List[int],
+                           in_service: bool = False) -> Dict:
+        """真实修改元件投运状态（断开/投入），改动持久生效于当前会话电网。
+
+        与 analyze_with_outage / run_n1_security_check 的区别：
+        后两者是“假想退出”（在 copy.deepcopy 副本上算，不改 self.net，算完自动复原）；
+        本工具是“真实改状态”，改动会留在 self.net 上，影响后续所有分析，
+        直到再次调用本工具恢复或重置会话。
+
+        典型流程（真断开后重新算）：
+            set_element_status(line,[25],False) -> run_ac_power_flow -> get_line_overload_summary
+        复原：set_element_status(line,[25],True)。
+
+        Args:
+            element_type: line/trafo/bus/gen/load/ext_grid
+            element_ids: 要改状态的元件引用列表（索引或名称，自动解析）
+            in_service: True=投入运行，False=退出运行（断开）
+
+        Returns:
+            Dict: 修改结果（含各元件最新投运状态）
+        """
+        if self.net is None:
+            return {"success": False, "message": "请先创建电网模型"}
+        try:
+            df_map = {
+                "line": self.net.line, "trafo": self.net.trafo, "bus": self.net.bus,
+                "gen": self.net.gen, "load": self.net.load, "ext_grid": self.net.ext_grid,
+            }
+            if element_type not in df_map:
+                return {"success": False,
+                        "message": f"不支持的元件类型: {element_type}"
+                                   f"（可选 line/trafo/bus/gen/load/ext_grid）"}
+            df = df_map[element_type]
+            if "in_service" not in df.columns:
+                return {"success": False,
+                        "message": f"{element_type} 无 in_service 列，无法改投运状态"}
+
+            # 先全部解析校验，避免改一半才发现某个引用无效
+            resolved = []
+            for eid in element_ids:
+                r = self._resolve_element_id(element_type, eid)
+                if r is None:
+                    return {"success": False,
+                            "message": f"无法解析元件引用: {element_type} '{eid}'"}
+                if r not in df.index:
+                    return {"success": False, "message": f"未找到 {element_type} ID={r}"}
+                resolved.append(r)
+
+            changed = []
+            for eid in resolved:
+                df.loc[eid, "in_service"] = bool(in_service)
+                changed.append({"ID": int(eid), "名称": str(df.loc[eid, "name"]),
+                                "是否投运": bool(in_service)})
+
+            # 拓扑变了，之前的潮流/分析缓存全部失效，避免 skip_runpp 吃到过期结果
+            self.results_cache = {}
+
+            action = "投入运行" if in_service else "退出运行(断开)"
+            return {
+                "success": True,
+                "message": f"已将 {len(changed)} 个 {element_type} 元件{action}，"
+                           f"该状态已持久生效，后续潮流/过载/电压分析均基于此电网。"
+                           f"如需复原请再次调用本工具并传 in_service={not bool(in_service)}。",
+                "元件类型": element_type,
+                "目标状态": "投运" if in_service else "退出",
+                "已修改元件": changed,
+            }
+        except Exception as e:
+            return {"success": False, "message": f"修改元件投运状态失败: {str(e)}"}
 
     def get_all_tools(self) -> List[Dict]:
         """获取所有可用工具信息

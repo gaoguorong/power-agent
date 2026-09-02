@@ -166,7 +166,8 @@ KNOWLEDGE_BASE = {
             "网损分析(calculate_loss_analysis)、电网拓扑(get_grid_topology)、"
             "元件参数(get_element_params)、知识查询(query_knowledge)、"
             "排序筛选(rank_elements)、单元件N-1(analyze_element_security)、"
-            "风险报告(generate_risk_report)、运行方式分析(analyze_with_outage)。"
+            "风险报告(generate_risk_report)、运行方式分析(analyze_with_outage)、"
+            "元件投运状态修改(set_element_status，真断开/投入，持久生效)。"
         ),
     },
     "power_flow": {
@@ -209,7 +210,7 @@ LLM_CONFIG = {
     "api_key": "sk-ws-H.EXIXEPM.JbDn.MEQCIAdbYMQfMaitX5XRyTTC2qepM-RhujISJKjMGQkRmFVgAiAxV6eWpZMjzopYG6ceG7SEYCtJM4AGqXMTb3KQUPhQsA",
     "api_url": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
     "api_url_langchain": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen3.8-27b",
+    "model": "qwen3.8-flash",
     "temperature": 0.1,
     "max_tokens": 2048,
     "timeout": 60,
@@ -222,6 +223,16 @@ SYSTEM_PROMPT = (
     "· 计算前必须先调 create_test_grid（用户说xx节点=指定电网类型，映射："
     "  9节点=case9  14节点=case14  30节点=case30  39节点=case39"
     "  57节点=case57  118节点=case118  300节点=case300  简单=simple）。"
+    "· 用户要用【真实电网/实际电网模型/指定文件】（如 nankao_net、开封实际电网、"
+    "  某个 .json/.p/.xlsx 电网文件）→ 调 load_grid_from_file(file_path)，不要用 create_test_grid。"
+    "  只给文件名时会自动在“实际电网数据”目录下查找；加载后即可照常调潮流/过载/电压/N-1 等工具。"
+    "· 用户要【真的断开/退出某线路·变压器·母线，再重新算潮流、看断开前后对比】"
+    "  （如“断开苗余线，重新计算潮流”）→ 调 set_element_status(element_type, element_ids, in_service=False)"
+    "  真实改状态，再调 run_ac_power_flow + get_line_overload_summary/get_voltage_violation_summary 分析；"
+    "  复原传 in_service=True。此改动会影响后续所有分析。"
+    "· 用户只是【假想某元件退出、看这一次结果、不改变后续电网】（如“假设线路5退出会怎样”）"
+    "  → 调 analyze_with_outage（副本上算，不影响电网）；要逐个扫描全部元件用 run_n1_security_check。"
+    "  判据：是否影响后续分析——影响=set_element_status，不影响=analyze_with_outage。"
     "· 多步任务必须「一次一轮，分步调用」：工具结果返回后，再判断下一步调什么。"
     "· 问定义/规程（如什么是N-1准则）→ 调 query_knowledge，不调计算工具。"
     ""

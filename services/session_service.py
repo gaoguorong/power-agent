@@ -172,8 +172,18 @@ class SessionService:
         if self.graph.has_grid_session(sid):
             return
         meta = row.get_grid_meta() or {}
-        grid_type = meta.get("last_grid_type")
+        grid_file = meta.get("last_grid_file")
         load_factor = float(meta.get("load_factor") or 1.0)
+        #优先恢复文件加载的真实电网
+        if grid_file:
+            try:
+                print(f'尝试从文件恢复电网对象：{grid_file}')
+                self._ensure_grid_loaded_from_file(sid, grid_file, load_factor)
+
+            except Exception:
+                pass  # 恢复失败就算了，用户再问时 LLM 会自己重新加载
+            return
+        grid_type = meta.get("last_grid_type")
         if grid_type and grid_type in _SUPPORTED_GRIDS:
             try:
                 self._ensure_grid_loaded(sid, grid_type, load_factor)
@@ -205,3 +215,27 @@ class SessionService:
                 gt_obj.set_load_scale(factor=factor)
         except Exception:
             pass  # 缩放失败不致命，用户下次说"负荷调到X倍"时 LLM 会再调
+
+    @staticmethod
+    def _ensure_grid_loaded_from_file(session_id: str, file_path: str,
+                                      load_factor: float = 1.0) -> None:
+        """从文件恢复真实电网对象（已存在则跳过），并按需调整负荷倍率"""
+        gt_obj = get_gt_obj(session_id)
+
+        if getattr(gt_obj, "net", None) is None:
+            try:
+                result = gt_obj.load_grid_from_file(file_path=file_path)
+                if result and result.get("success"):
+                    setattr(gt_obj, "_patched_grid_file",
+                            result.get("文件路径") or file_path)
+            except Exception:
+                return
+        elif not getattr(gt_obj, "_patched_grid_file", None):
+            setattr(gt_obj, "_patched_grid_file", file_path)
+
+        try:
+            factor = float(load_factor or 1.0)
+            if abs(factor - 1.0) > 1e-6:
+                gt_obj.set_load_scale(factor=factor)
+        except Exception:
+            pass
