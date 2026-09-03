@@ -1,25 +1,32 @@
+# ============================================================
+# 电网分析智能体 - 依赖清单（版本已锁死，与实际跑通环境一致）
+# Python 版本要求：3.10 ~ 3.12（3.9 及以下会因 str|None 语法崩溃，3.13 numpy 无轮子）
+# 安装：pip install -r requirements.txt
+# 国内加速：pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# ============================================================
+
 # ================= 核心计算依赖 =================
 pandapower==3.4.0
-pandas>=2.0.0
-numpy>=1.24.0
+pandas==2.3.3
+numpy==1.26.4
 
-# ================= LLM / LangChain =================
-langchain-openai>=0.2.0
-langchain-core>=0.3.0
-langgraph>=0.2.60
-langgraph-checkpoint-sqlite>=0.2.0
+# ================= LLM / LangChain（实测为 1.x 大版本，勿降级到 0.x）=================
+langchain-openai==1.6.0
+langchain-core==1.6.0
+langgraph==1.2.11
+langgraph-checkpoint-sqlite==3.1.1
 
 # ================= FastAPI 后端 =================
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-sse-starlette>=2.1.0          # SSE 流式推送
-python-multipart>=0.0.9
-python-dotenv>=1.0.0
-aiofiles>=24.0.0
+fastapi==0.139.0
+uvicorn[standard]==0.50.2
+pydantic==2.12.5
+pydantic-settings==2.15.0
+sse-starlette==1.8.2           # SSE 流式推送
+python-multipart==0.0.20
+python-dotenv==1.1.0
+aiofiles==24.1.0
 
 # ================= MySQL 业务库 =================
-SQLAlchemy>=2.0.0
-aiomysql>=0.2.0               # 异步MySQL驱动
-pymysql>=1.1.0                # 兜底同步驱动（可兼容使用）
+SQLAlchemy==2.0.40
+aiomysql==0.3.2                # 异步MySQL驱动
+pymysql==1.1.2                 # 兜底同步驱动（可兼容使用）

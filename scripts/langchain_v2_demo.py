@@ -163,8 +163,8 @@ if __name__ == "__main__":
     # 演示：两个独立会话并行（张三 case30 研究  vs  李四 case57 潮流+N-1）
     # 切换会话 = 换一个带新 thread_id 的 config 即可，两者完全隔离。
     # ------------------------------------------------------------------
-    cfg_zhangsan = {"configurable": {"thread_id": "sess-zhangsan-demo-001"}}
-    cfg_lisi     = {"configurable": {"thread_id": "sess-lisi-demo-001"}}
+    cfg_zhangsan = {"configurable": {"thread_id": "1"}}
+
 
     # === 张三会话：case30 分步研究（3 轮）===
 
@@ -175,15 +175,15 @@ if __name__ == "__main__":
     _print_result("张三 第1轮: case30建网+潮流+过载分析", zs_r1)
 
 
-    ls_r1 = agent.invoke(
-        {"messages": [HumanMessage("你好，请用 57 节点电网进行潮流计算，然后进行 N-1 安全校核分析，给我结果。")]},
-        config=cfg_lisi
-    )
-    _print_result("李四 第1轮: case57潮流+N-1校核（新会话，独立case57电网）", ls_r1)
-
-
-    zs_r3 = agent.invoke(
-        {"messages": [HumanMessage("之前我的 case30 是 1.8 倍负荷，现在再做一个 N-1 校核，只看前 10 条线路。")]},
-        config=cfg_zhangsan
-    )
-    _print_result("张三 第3轮: N-1校核前10条线（自动找回之前1.8倍负荷的case30）", zs_r3)
+    # ls_r1 = agent.invoke(
+    #     {"messages": [HumanMessage("你好，请用 57 节点电网进行潮流计算，然后进行 N-1 安全校核分析，给我结果。")]},
+    #     config=cfg_lisi
+    # )
+    # _print_result("李四 第1轮: case57潮流+N-1校核（新会话，独立case57电网）", ls_r1)
+    #
+    #
+    # zs_r3 = agent.invoke(
+    #     {"messages": [HumanMessage("之前我的 case30 是 1.8 倍负荷，现在再做一个 N-1 校核，只看前 10 条线路。")]},
+    #     config=cfg_zhangsan
+    # )
+    # _print_result("张三 第3轮: N-1校核前10条线（自动找回之前1.8倍负荷的case30）", zs_r3)
