@@ -15,6 +15,7 @@ langchain-openai==1.6.0
 langchain-core==1.6.0
 langgraph==1.2.11
 langgraph-checkpoint-sqlite==3.1.1
+langgraph-checkpoint-mysql==3.0.0   # MySQL 持久化 checkpointer（需 MySQL 8.0+，驱动用已列的 pymysql）
 
 # ================= FastAPI 后端 =================
 fastapi==0.139.0
