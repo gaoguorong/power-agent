@@ -45,12 +45,16 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()   # 正常结束就提交
         except Exception:
-            await session.rollback()  # 出错就回滚
+            if session.is_active:
+                await session.rollback()
             raise
-        finally:
-            await session.close()     # 无论如何关闭会话
+        else:
+            try:
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
 
 
 # ========== 5. 建表工具：服务启动时调用一次 ==========

@@ -205,16 +205,32 @@ KNOWLEDGE_BASE = {
     },
 }
 
-# LLM配置
-LLM_CONFIG = {
+# ==================== LLM 配置 ====================
+# 切换模型：修改下面 ACTIVE_LLM 的值为 "maas" 或 "ollama" 即可
+ACTIVE_LLM = "maas"
+
+# 阿里云百炼（原默认配置）
+LLM_CONFIG_MAAS = {
     "api_key": "sk-ws-H.EXIXEPM.JbDn.MEQCIAdbYMQfMaitX5XRyTTC2qepM-RhujISJKjMGQkRmFVgAiAxV6eWpZMjzopYG6ceG7SEYCtJM4AGqXMTb3KQUPhQsA",
-    "api_url": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
-    "api_url_langchain": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen3.8-flash",
+    "api_url": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.7-flash-2026-07-15",
     "temperature": 0.1,
     "max_tokens": 2048,
     "timeout": 60,
 }
+
+# Ollama 本地部署（千问 27b）
+LLM_CONFIG_OLLAMA = {
+    "api_key": "ollama",
+    "api_url": "http://localhost:11434/v1",
+    "model": "qwen2.5:72b",
+    "temperature": 0.1,
+    "max_tokens": 4096,
+    "timeout": 120,
+}
+
+# 对外统一暴露：根据 ACTIVE_LLM 指向当前活跃的配置
+LLM_CONFIG = LLM_CONFIG_OLLAMA if ACTIVE_LLM == "ollama" else LLM_CONFIG_MAAS
 SYSTEM_PROMPT = (
     "你是专业的电网静态安全分析助手，必须用提供的原子工具分步回答用户问题。"
     ""
@@ -271,5 +287,5 @@ SERVER_CONFIG = {
 
 # MySQL 业务数据库配置
 DATABASE_CONFIG = {
-    "mysql_url": "mysql+aiomysql://root:optsearch.1234@127.0.0.1:3306/power_agent?charset=utf8",
+    "mysql_url": "mysql+aiomysql://root:Taylor081930@127.0.0.1:3306/power_agent?charset=utf8",
 }

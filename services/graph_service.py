@@ -23,9 +23,13 @@ from executors.registry import build_default_registry
 from schemas.tool_result import normalize_tool_result
 from tools import langchain_tool
 from tools.langchain_tool import ALL_TOOLS
+from skills.skill_runner import match_skill, run_overload_relief
 
 # 单次聊天内最多允许多少轮「LLM思考 → 调工具」，防止异常情况下死循环
 MAX_TOOL_ROUNDS = 10
+
+# Skill 快速通道的哨兵：编排引擎接管并完成本回合后产出，告知上层无需再走 LLM 流程
+_SKILL_DONE = object()
 
 
 class GraphService:
@@ -75,6 +79,18 @@ class GraphService:
         yield {"event": "welcome", "data": {"session_id": session_id, "question": question}}
 
         try:
+            # ===== Skill 快速通道：LLM 决策前先做意图匹配 =====
+            # 命中且电网已建时，直接跑确定性编排闭环（绕过 LLM 逐工具决策）；
+            # 未命中/前置不足/异常，都优雅回退到下面的 agent_node 正常流程。
+            skill_done = False
+            async for ev in self._run_skill_channel(session_id, question, state, tool_runs):
+                if ev is _SKILL_DONE:
+                    skill_done = True
+                    continue
+                yield ev
+            if skill_done:
+                return
+
             for _ in range(MAX_TOOL_ROUNDS):
                 # 1) LLM 决策：要么直接回答，要么给出要调用的工具清单
                 ai_msg = await asyncio.to_thread(graph_agent.agent_node, state)
@@ -129,6 +145,82 @@ class GraphService:
                 "message": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(limit=5),
             }}
+
+    async def _run_skill_channel(
+        self,
+        session_id: str,
+        question: str,
+        state: Dict[str, Any],
+        tool_runs: List[Dict[str, Any]],
+    ) -> AsyncGenerator[Any, None]:
+        """Skill 快速通道：命中且前置满足时，跑确定性编排闭环并逐步产出 SSE 事件。
+
+        - 未命中 / 电网尚未建立：不产出任何事件直接返回，让上层回退到 agent_node 正常流程；
+        - 命中并接管：把编排引擎每步工具执行转成 tool_start/tool_end，过程按标准结构写回
+          state（AIMessage(tool_calls) + ToolMessage + 结论），最后产出 token/done，并以
+          _SKILL_DONE 哨兵告知上层“本回合已结束，无需再走 LLM”。
+        """
+        skill = match_skill(question)
+        if skill is None:
+            return
+        gt = langchain_tool.get_gt_obj(session_id)
+        if getattr(gt, "net", None) is None:
+            # 前置不足：还没建电网（要先建网/断线，需 LLM 解析参数），交回正常流程
+            return
+
+        tool_calls: List[Dict[str, Any]] = []
+        tool_msgs: List[ToolMessage] = []
+        final_text = ""
+        seq = 0
+
+        gen = run_overload_relief(gt, skill)
+        while True:
+            try:
+                # 编排引擎是同步 generator（内含阻塞的 runpp），逐步放线程池推进，
+                # 既不卡事件循环，又能把每一步实时下发前端。
+                ev = await asyncio.to_thread(next, gen)
+            except StopIteration:
+                break
+
+            kind = ev.get("kind")
+            if kind == "tool":
+                seq += 1
+                name = ev.get("name", "")
+                inp = ev.get("input", {}) or {}
+                out = _sanitize_non_finite(ev.get("output", {}))
+                call_id = f"skill-{seq}"
+                # 实时 SSE：让前端看到“正在做什么”
+                tool_runs.append({"name": name, "input": inp, "output": None,
+                                  "status": "running", "_call_id": call_id})
+                yield {"event": "tool_start", "data": {
+                    "name": name, "input": _safe_preview(inp), "run_id": call_id}}
+                _fill_tool_run(tool_runs, name, out, call_id)
+                yield {"event": "tool_end", "data": {
+                    "name": name, "output_preview": _safe_preview(out, 200)}}
+                # 标准消息结构：供刷新恢复 / 持久化 / 多轮上下文
+                tool_calls.append({"name": name, "args": inp, "id": call_id, "type": "tool_call"})
+                tool_msgs.append(ToolMessage(
+                    content=json.dumps(out, ensure_ascii=False, default=str),
+                    name=name, tool_call_id=call_id))
+
+            elif kind == "final":
+                if ev.get("aborted"):
+                    return  # 前置不足，回退（不接管本回合）
+                final_text = ev.get("text", "") or ""
+
+        # 收尾：整个 skill 回合按“一条 AIMessage(全部工具调用) + 全部 ToolMessage + 结论”写回，
+        # 与正常工具循环的历史结构一致，_messages_to_frontend_format 恢复时才能正确聚合。
+        if tool_calls:
+            state["messages"].append(AIMessage(content="", tool_calls=tool_calls))
+            state["messages"].extend(tool_msgs)
+        if final_text:
+            state["messages"].append(AIMessage(content=final_text))
+        self._save_messages(session_id, state)
+
+        if final_text:
+            yield {"event": "token", "data": {"text": final_text}}
+        yield {"event": "done", "data": {"ai_text": final_text, "tool_runs": tool_runs}}
+        yield _SKILL_DONE
 
     def _execute_tools(self, tool_calls: List[Dict[str, Any]]) -> List[ToolMessage]:
         """逐个执行工具，结果统一为标准结构再包 ToolMessage。

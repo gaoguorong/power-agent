@@ -2315,6 +2315,25 @@ class GridTools:
                 },
                 "returns": "Dict - 调整结果（含调整前后的负荷统计）"
             },
+            {
+                "name": "calc_gen_sensitivity",
+                "description": "数值扰动法计算机组有功出力对目标线路潮流的灵敏度(∂P_line/∂P_gen)，用于再调度消过载",
+                "parameters": {
+                    "target_line_ids": "list - 目标线路索引列表(为空则取负载率最高线路)",
+                    "delta_mw": "float - 灵敏度扰动步长MW(默认5)",
+                    "max_gens": "int - 最多参与计算的机组数(默认30)"
+                },
+                "returns": "Dict - 各机组对目标线路的灵敏度及线路基准功率"
+            },
+            {
+                "name": "adjust_gen_output",
+                "description": "调整指定机组有功出力(p_mw+=delta_mw)，受机组上下限约束，持久生效",
+                "parameters": {
+                    "gen_id": "int/str - 机组索引或名称",
+                    "delta_mw": "float - 调整量MW(正=增发,负=减发)"
+                },
+                "returns": "Dict - 调整前后出力与是否触限"
+            },
         ]
         return tools
 
@@ -2488,6 +2507,183 @@ class GridTools:
         except Exception as e:
             return {"success": False, "message": f"电压修正失败: {str(e)}"}
 
+    def _most_loaded_line_ids(self, top_n: int = 1) -> List[int]:
+        """返回当前负载率最高的 top_n 条线路索引（需已有潮流结果）"""
+        if self.net is None or not hasattr(self.net, "res_line") or len(self.net.res_line) == 0:
+            return []
+        ranked = []
+        for idx in self.net.res_line.index:
+            lp = self._safe_get_col(self.net.res_line, idx, "loading_percent", 0.0)
+            try:
+                ranked.append((float(lp), int(idx)))
+            except (TypeError, ValueError):
+                continue
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        return [idx for _, idx in ranked[:top_n]]
+
+    def _line_transfer_mw(self, net, line_ids: List[int]) -> Dict[int, float]:
+        """取指定线路的传输功率(MW)：两端有功绝对值的较大者"""
+        out: Dict[int, float] = {}
+        for lid in line_ids:
+            if lid not in net.res_line.index:
+                continue
+            p_from = self._safe_get_col(net.res_line, lid, "p_from_mw", 0.0)
+            p_to = self._safe_get_col(net.res_line, lid, "p_to_mw", 0.0)
+            try:
+                out[int(lid)] = max(abs(float(p_from)), abs(float(p_to)))
+            except (TypeError, ValueError):
+                out[int(lid)] = 0.0
+        return out
+
+    def calc_gen_sensitivity(self, target_line_ids: Optional[List[int]] = None,
+                             delta_mw: float = 5.0, max_gens: int = 30) -> Dict:
+        """数值扰动法计算机组有功出力对目标线路潮流的灵敏度 ∂P_line/∂P_gen。
+
+        在电网副本上，对每台在运机组的 p_mw 施加一个小扰动 delta_mw 并重算潮流，
+        用目标线路传输功率的变化量 / 扰动量近似灵敏度。功率不平衡由平衡节点自动吸收，
+        因此得到的是“机组相对平衡节点”的灵敏度，正好符合一升一降的对调消过载逻辑。
+
+        Args:
+            target_line_ids: 目标线路索引列表；为空则自动取当前负载率最高的线路
+            delta_mw: 灵敏度扰动步长(MW)，越小越接近线性但越易受收敛精度影响
+            max_gens: 最多参与计算的机组数（大电网限速用）
+
+        Returns:
+            Dict: 每台机组对每条目标线路的灵敏度，及目标线路基准传输功率
+        """
+        if self.net is None:
+            return {"success": False, "message": "请先创建电网模型"}
+        try:
+            if not self._ensure_power_flow():
+                return {"success": False, "message": "潮流计算不收敛，无法计算灵敏度"}
+            if len(self.net.gen) == 0:
+                return {"success": False, "message": "当前电网无可调机组(net.gen 为空)"}
+
+            # 1) 目标线路：未指定则取负载率最高的一条
+            if not target_line_ids:
+                target_line_ids = self._most_loaded_line_ids(top_n=1)
+            target_line_ids = [int(x) for x in target_line_ids]
+            if not target_line_ids:
+                return {"success": False, "message": "未找到可分析的目标线路"}
+
+            # 2) 基准传输功率
+            base_flow = self._line_transfer_mw(self.net, target_line_ids)
+
+            # 3) 参与计算的在运机组
+            gen_ids = [g for g in self.net.gen.index
+                       if bool(self.net.gen.loc[g].get("in_service", True))]
+            if not gen_ids:
+                return {"success": False, "message": "无在运机组可计算灵敏度"}
+            gen_ids = gen_ids[:max_gens]
+
+            # 4) 逐台扰动（在副本上做，保持 self.net 基准状态不变）
+            net_test = copy.deepcopy(self.net)
+            sensitivities = []
+            for g in gen_ids:
+                p0 = float(net_test.gen.loc[g, "p_mw"])
+                net_test.gen.loc[g, "p_mw"] = p0 + delta_mw
+                try:
+                    pp.runpp(net_test)
+                    ok = bool(net_test.converged)
+                except Exception:
+                    ok = False
+                net_test.gen.loc[g, "p_mw"] = p0  # 恢复基准
+                if not ok:
+                    continue
+                new_flow = self._line_transfer_mw(net_test, target_line_ids)
+                per_line = {}
+                for lid in target_line_ids:
+                    d = (new_flow.get(lid, 0.0) - base_flow.get(lid, 0.0)) / delta_mw
+                    per_line[lid] = round(d, 5)
+                sensitivities.append({
+                    "机组ID": int(g),
+                    "名称": str(self.net.gen.loc[g, "name"]),
+                    "当前出力(MW)": round(p0, 3),
+                    "灵敏度": per_line,
+                })
+
+            if not sensitivities:
+                return {"success": False, "message": "扰动后潮流均不收敛，无法计算灵敏度"}
+
+            return {
+                "success": True,
+                "message": f"已计算 {len(sensitivities)} 台机组对 {len(target_line_ids)} 条目标线路的灵敏度",
+                "目标线路": target_line_ids,
+                "扰动步长(MW)": delta_mw,
+                "目标线路基准功率(MW)": {int(k): round(float(v), 3) for k, v in base_flow.items()},
+                "机组灵敏度": sensitivities,
+            }
+        except Exception as e:
+            return {"success": False, "message": f"灵敏度计算失败: {str(e)}"}
+
+    def adjust_gen_output(self, gen_id, delta_mw: float) -> Dict:
+        """调整指定机组的有功出力：p_mw += delta_mw，受机组上下限约束。
+
+        delta_mw 为正=增发，为负=减发；超出 min_p_mw/max_p_mw 时自动夹到边界。
+        改动持久生效于当前会话电网，并清空分析缓存（参数已变，避免 skip_runpp 吃旧结果）。
+
+        Args:
+            gen_id: 机组索引或名称引用（自动解析）
+            delta_mw: 出力调整量(MW)
+
+        Returns:
+            Dict: 调整前后出力、实际调整量、是否触限
+        """
+        if self.net is None:
+            return {"success": False, "message": "请先创建电网模型"}
+        try:
+            r = self._resolve_element_id("gen", gen_id)
+            if r is None or r not in self.net.gen.index:
+                return {"success": False, "message": f"未找到机组 ID={gen_id}"}
+
+            p0 = float(self.net.gen.loc[r, "p_mw"])
+
+            # 读取上下限（可能缺列或为 NaN，缺则视为无限）
+            pmin = pmax = None
+            if "min_p_mw" in self.net.gen.columns:
+                try:
+                    v = float(self.net.gen.loc[r, "min_p_mw"])
+                    if not np.isnan(v):
+                        pmin = v
+                except (TypeError, ValueError):
+                    pass
+            if "max_p_mw" in self.net.gen.columns:
+                try:
+                    v = float(self.net.gen.loc[r, "max_p_mw"])
+                    if not np.isnan(v):
+                        pmax = v
+                except (TypeError, ValueError):
+                    pass
+
+            target = p0 + float(delta_mw)
+            clipped = target
+            if pmax is not None:
+                clipped = min(clipped, pmax)
+            if pmin is not None:
+                clipped = max(clipped, pmin)
+
+            self.net.gen.loc[r, "p_mw"] = clipped
+            self.results_cache = {}
+
+            hit_limit = abs(clipped - target) > 1e-6
+            name = str(self.net.gen.loc[r, "name"])
+            msg = f"机组 {name} 出力 {p0:.2f} → {clipped:.2f} MW"
+            if hit_limit:
+                msg += "（已触限，未按计划完全调整）"
+            return {
+                "success": True,
+                "message": msg,
+                "机组ID": int(r),
+                "名称": name,
+                "调整前(MW)": round(p0, 3),
+                "调整后(MW)": round(clipped, 3),
+                "计划调整(MW)": round(float(delta_mw), 3),
+                "实际调整(MW)": round(clipped - p0, 3),
+                "是否触限": hit_limit,
+            }
+        except Exception as e:
+            return {"success": False, "message": f"机组出力调整失败: {str(e)}"}
+
     def execute_tool(self, tool_name: str, **kwargs) -> Dict:
         """执行指定工具
         
@@ -2517,6 +2713,8 @@ class GridTools:
             "analyze_with_outage": self.analyze_with_outage,
             "apply_voltage_correction": self.apply_voltage_correction,
             "set_load_scale": self.set_load_scale,
+            "calc_gen_sensitivity": self.calc_gen_sensitivity,
+            "adjust_gen_output": self.adjust_gen_output,
         }
         
         if tool_name not in tool_map:

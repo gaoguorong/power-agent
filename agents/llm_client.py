@@ -21,7 +21,7 @@ def create_llm() -> ChatOpenAI:
     """构造全项目共用的 ChatOpenAI 实例（GraphAgent 启动时调用一次）"""
     return ChatOpenAI(
         model=LLM_CONFIG["model"],
-        base_url=LLM_CONFIG["api_url_langchain"],
+        base_url=LLM_CONFIG["api_url"],
         api_key=LLM_CONFIG["api_key"],
         temperature=LLM_CONFIG["temperature"],
         max_tokens=LLM_CONFIG["max_tokens"],

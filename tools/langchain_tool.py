@@ -298,6 +298,43 @@ def reset_grid_session(session_id: str = "default") -> Dict:
     except Exception as e:
         return {"success": False, "message": f"重置会话失败: {str(e)}"}
 
+
+@tool
+def calc_gen_sensitivity(target_line_ids: List[int] = None,
+                          delta_mw: float = 5.0, max_gens: int = 30,
+                          session_id: str = "default") -> Dict:
+    """数值扰动法计算机组有功出力对目标线路潮流的灵敏度(∂P_line/∂P_gen)。
+    用于再调度消过载：灵敏度为正表示该机组增发会推高目标线路潮流，为负表示增发反而降低。
+    Args:
+        target_line_ids: 目标线路索引列表；为空则自动取当前负载率最高的线路
+        delta_mw: 灵敏度扰动步长(MW)
+        max_gens: 最多参与计算的机组数（大电网限速）
+        session_id: 会话ID
+    """
+    try:
+        gt = get_gt_obj(session_id)
+        return gt.calc_gen_sensitivity(target_line_ids=target_line_ids,
+                                       delta_mw=delta_mw,
+                                       max_gens=max_gens)
+    except Exception as e:
+        return {"success": False, "message": f"灵敏度计算失败: {str(e)}"}
+
+
+@tool
+def adjust_gen_output(gen_id: int, delta_mw: float, session_id: str = "default") -> Dict:
+    """调整指定机组的有功出力：p_mw += delta_mw，受机组上下限约束，持久生效于当前会话电网。
+    delta_mw 为正=增发，为负=减发。常用于消过载再调度（配合 calc_gen_sensitivity 选机组）。
+    Args:
+        gen_id: 机组索引，例如 2
+        delta_mw: 出力调整量(MW)，正=增发，负=减发
+        session_id: 会话ID
+    """
+    try:
+        gt = get_gt_obj(session_id)
+        return gt.adjust_gen_output(gen_id=gen_id, delta_mw=delta_mw)
+    except Exception as e:
+        return {"success": False, "message": f"机组出力调整失败: {str(e)}"}
+
 # ============================================================
 # 对外导出的工具清单（langchain_v1直接用）
 # ============================================================
@@ -317,6 +354,8 @@ ATOMIC_TOOLS = [
     get_grid_topology,
     calculate_loss_analysis,
     reset_grid_session,
+    calc_gen_sensitivity,
+    adjust_gen_output,
 ]
 
 ALL_TOOLS = ATOMIC_TOOLS

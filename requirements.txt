@@ -7,7 +7,7 @@
 
 # ================= 核心计算依赖 =================
 pandapower==3.4.0
-pandas==2.3.3
+pandas==2.3.2
 numpy==1.26.4
 
 # ================= LLM / LangChain（实测为 1.x 大版本，勿降级到 0.x）=================
@@ -19,7 +19,7 @@ langgraph-checkpoint-mysql==3.0.0   # MySQL 持久化 checkpointer（需 MySQL 8
 
 # ================= FastAPI 后端 =================
 fastapi==0.139.0
-uvicorn[standard]==0.50.2
+uvicorn==0.50.2
 pydantic==2.12.5
 pydantic-settings==2.15.0
 sse-starlette==1.8.2           # SSE 流式推送
