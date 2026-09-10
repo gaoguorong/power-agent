@@ -70,7 +70,7 @@ class GridTools:
         except Exception as e:
             return {"success": False, "message": f"创建电网失败: {str(e)}"}
 
-    def load_grid_from_file(self, file_path: str) -> Dict:
+    def load_grid_from_file(self, file_path: str, repair_isolated_gens: bool = True) -> Dict:
         """从文件加载真实电网模型（pandapower 存储格式）
 
         支持同一个模型的三种存储形式：
@@ -81,6 +81,11 @@ class GridTools:
         Args:
             file_path: 电网模型文件路径。可为绝对路径；若只给文件名或相对路径，
                        会自动在项目根目录及“实际电网数据”目录下查找。
+            repair_isolated_gens: 是否自动修复“孤立零出力机组”（挂在无任何连接
+                       的母线上、出力为0的机组），默认True。真实电网数据导出时
+                       常见机组母线丢连接、出力清零，会导致全网只剩平衡机出力、
+                       灵敏度无机组可调、负荷倍率稍大即潮流不收敛；开启后自动把
+                       这类机组重挂到同电压等级连通母线并按负荷比例分配出力。
 
         Returns:
             Dict: 加载结果信息（含电网规模概览，母线清单过大时不返回）
@@ -113,6 +118,11 @@ class GridTools:
             # 记录来源文件，供服务重启后按路径恢复（区别于内置算例的 grid_type）
             self._source_file = resolved
 
+            # 可选：修复孤立零出力机组（真实电网数据常见缺陷）
+            repair_info = None
+            if repair_isolated_gens:
+                repair_info = self._repair_isolated_gens()
+
             grid_info = self._get_grid_info()
             # 真实电网上千个母线，完整清单会刷屏，这里只给规模概览
             grid_info.pop("母线列表", None)
@@ -122,12 +132,117 @@ class GridTools:
                 )
             except Exception:
                 pass
-            return {"success": True,
-                    "message": f"真实电网模型加载成功: {os.path.basename(resolved)}",
-                    "文件路径": resolved,
-                    "grid_info": grid_info}
+            result = {"success": True,
+                      "message": f"真实电网模型加载成功: {os.path.basename(resolved)}",
+                      "文件路径": resolved,
+                      "grid_info": grid_info}
+            if repair_info and repair_info.get("修复机组数", 0) > 0:
+                result["message"] += (f"；已自动修复 {repair_info['修复机组数']} 台孤立机组"
+                                      f"（重挂母线并按负荷分配出力）")
+                result["电网修复"] = repair_info
+            return result
         except Exception as e:
             return {"success": False, "message": f"加载电网模型失败: {str(e)}"}
+
+    def _repair_isolated_gens(self) -> Dict:
+        """检测并修复“孤立零出力机组”：挂在不连任何 line/trafo/switch 的母线、
+        且出力为零的机组。
+
+        真实电网数据（如兰考电网）导出时常出现发电机组母线丢失连接、出力清零：
+        44 台机组里 43 台挂在完全孤立的 37.5kV 母线上且 p_mw=0，全网只剩平衡机
+        一台出力。后果：线路负载率普遍偏低、断线造不出过载、负荷倍率稍大即潮流
+        不收敛、机组灵敏度近似全零导致消过载再调度无机组可调。
+
+        修复策略：
+        1. 把孤立机组的母线重挂到同电压等级的连通母线（无同等级时挂任意连通母线），
+           多台机组轮换分散到多个目标母线，避免全部堆在一点；
+        2. 对零出力机组按负荷比例分配出力（总额≈负荷×1.1 预留网损裕度），
+           受机组 max_p_mw 约束；负荷为零时只重挂接线、不虚构出力。
+
+        Returns:
+            Dict: 修复信息（修复机组数、重挂映射、出力分配等）
+        """
+        net = self.net
+        if net is None or len(net.gen) == 0:
+            return {"success": False, "message": "当前电网无机组"}
+
+        # 连通母线集合：线路/变压器端点 + bus-bus switch 两端
+        connected = set(net.line["from_bus"]) | set(net.line["to_bus"]) \
+            if len(net.line) else set()
+        if len(net.trafo):
+            connected |= set(net.trafo["hv_bus"]) | set(net.trafo["lv_bus"])
+        if len(net.switch):
+            bb = net.switch[net.switch["et"] == "b"]
+            if len(bb):
+                connected |= set(bb["bus"]) | set(bb["element"])
+
+        iso_mask = ~net.gen["bus"].isin(connected)
+        isolated = net.gen[iso_mask]
+        if len(isolated) == 0:
+            return {"success": True, "message": "无孤立机组，无需修复", "修复机组数": 0}
+
+        # 同电压等级连通母线分组（重挂目标池）
+        kv_groups: Dict[float, List[int]] = {}
+        for b in sorted(connected):
+            if b not in net.bus.index:
+                continue
+            try:
+                kv = float(net.bus.loc[b, "vn_kv"])
+            except (TypeError, ValueError):
+                continue
+            kv_groups.setdefault(kv, []).append(int(b))
+        fallback = [b for grp in kv_groups.values() for b in grp]
+        if not fallback:
+            return {"success": False, "message": "无连通母线可重挂孤立机组"}
+
+        # 出力分配：零出力机组按负荷比例分配，总额≈负荷×1.1（预留网损裕度）
+        load_sum = float(net.load["p_mw"].sum()) if len(net.load) else 0.0
+        zero_ids = isolated[isolated["p_mw"] == 0].index.tolist()
+        each_mw = (load_sum * 1.1 / len(zero_ids)) if (zero_ids and load_sum > 0) else 0.0
+
+        def _max_p(gid: int) -> Optional[float]:
+            if "max_p_mw" not in net.gen.columns:
+                return None
+            try:
+                v = float(net.gen.loc[gid, "max_p_mw"])
+                return v if v == v and v > 0 else None  # NaN 视为无约束
+            except (TypeError, ValueError):
+                return None
+
+        remap: Dict[int, int] = {}
+        assigned_mw = 0.0
+        target_idx = 0
+        for gid in isolated.index:
+            orig_bus = int(net.gen.loc[gid, "bus"])
+            kv = None
+            if orig_bus in net.bus.index:
+                try:
+                    kv = float(net.bus.loc[orig_bus, "vn_kv"])
+                except (TypeError, ValueError):
+                    kv = None
+            if kv is not None:
+                pool = kv_groups.get(kv) or fallback
+            else:
+                pool = fallback
+            new_bus = pool[target_idx % len(pool)]
+            target_idx += 1
+            net.gen.loc[gid, "bus"] = new_bus
+            remap[int(gid)] = new_bus
+            if gid in zero_ids and each_mw > 0:
+                cap = _max_p(gid)
+                step = min(each_mw, cap) if cap is not None else each_mw
+                net.gen.loc[gid, "p_mw"] = step
+                assigned_mw += step
+
+        return {
+            "success": True,
+            "message": f"已修复 {len(isolated)} 台孤立机组",
+            "修复机组数": int(len(isolated)),
+            "出力分配机组数": int(len(zero_ids)) if each_mw > 0 else 0,
+            "每台分配出力(MW)": round(each_mw, 3) if each_mw > 0 else 0.0,
+            "分配出力合计(MW)": round(assigned_mw, 3),
+            "重挂映射(机组ID→母线)": remap,
+        }
 
     def _resolve_grid_file_path(self, file_path: str):
         """解析电网模型文件路径。
@@ -2569,11 +2684,18 @@ class GridTools:
             # 2) 基准传输功率
             base_flow = self._line_transfer_mw(self.net, target_line_ids)
 
-            # 3) 参与计算的在运机组
+            # 3) 参与计算的在运机组：优先选有实际出力的机组 + slack 加权
             gen_ids = [g for g in self.net.gen.index
                        if bool(self.net.gen.loc[g].get("in_service", True))]
             if not gen_ids:
                 return {"success": False, "message": "无在运机组可计算灵敏度"}
+
+            def _gen_priority(gid):
+                p = abs(float(self.net.gen.loc[gid, "p_mw"]))
+                slack_bonus = 1e6 if bool(self.net.gen.loc[gid].get("slack", False)) else 0.0
+                return p + slack_bonus
+
+            gen_ids.sort(key=_gen_priority, reverse=True)
             gen_ids = gen_ids[:max_gens]
 
             # 4) 逐台扰动（在副本上做，保持 self.net 基准状态不变）

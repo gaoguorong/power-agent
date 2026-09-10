@@ -37,17 +37,22 @@ def create_test_grid(grid_type: str = "case30", session_id: str = "default") -> 
 
 
 @tool
-def load_grid_from_file(file_path: str, session_id: str = "default") -> Dict:
+def load_grid_from_file(file_path: str, repair_isolated_gens: bool = True,
+                        session_id: str = "default") -> Dict:
     """从文件加载真实电网模型（pandapower 存储格式），加载后即可用潮流/N-1/过载/电压越限等工具分析。
     支持同一个模型的三种存储形式 .json/.p/.pickle/.xlsx/.xls；
     若只给文件名，会自动在项目根目录和“实际电网数据”目录下查找。
+    加载后自动修复“孤立零出力机组”（挂在不连任何线路的母线上、出力为0的机组，如兰考电网）：
+    重挂到同电压等级连通母线并按负荷比例分配出力，保证后续灵敏度/消过载/负荷扫描可用。
     Args:
         file_path: 电网模型文件路径或文件名，例如 "nankao_net.json" 或 "实际电网数据/nankao_net.p"
+        repair_isolated_gens: 是否自动修复孤立零出力机组，默认True（一般保持默认即可）
         session_id: 会话ID，用于多会话隔离
     """
     try:
         gt = get_gt_obj(session_id)
-        result = gt.load_grid_from_file(file_path=file_path)
+        result = gt.load_grid_from_file(file_path=file_path,
+                                        repair_isolated_gens=repair_isolated_gens)
         # 记录来源文件，供服务重启后恢复（区别于内置算例的 grid_type）
         if result and result.get("success"):
             setattr(gt, "_patched_grid_file", result.get("文件路径") or file_path)
@@ -97,12 +102,12 @@ def run_n1_security_check(element_type: str = "line",
 
 
 @tool
-def get_line_overload_summary(threshold: float = 80.0,
+def get_line_overload_summary(threshold: float = 20,
                                skip_runpp: bool = False,
                                session_id: str = "default") -> Dict:
     """线路/变压器过载分析：列出负载率超过阈值的元件
     Args:
-        threshold: 过载阈值(%)，默认80，100表示满载
+        threshold: 过载阈值(%)，默认20，100表示满载
         skip_runpp: 是否跳过潮流计算（已有结果时传True）
         session_id: 会话ID
     """

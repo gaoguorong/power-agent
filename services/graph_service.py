@@ -23,7 +23,8 @@ from executors.registry import build_default_registry
 from schemas.tool_result import normalize_tool_result
 from tools import langchain_tool
 from tools.langchain_tool import ALL_TOOLS
-from skills.skill_runner import match_skill, run_overload_relief
+from skills.skill_runner import (match_skill, match_skill_after_llm,
+                                   run_overload_relief, run_load_sweep)
 
 # 单次聊天内最多允许多少轮「LLM思考 → 调工具」，防止异常情况下死循环
 MAX_TOOL_ROUNDS = 10
@@ -97,8 +98,22 @@ class GraphService:
                 ai_msg = ai_msg["messages"][-1]
                 state["messages"].append(ai_msg)
 
-                # 2) 没有 tool_calls = 最终回答，收尾
+                # 2) 没有 tool_calls = LLM 认为本回合该收尾了
+                #    但先检查后置 Skill：用户是不是想消过载？现在是不是真的有过载？
+                #    如果是 → 插播消过载闭环，把 Skill 产出的 SSE 事件接在 LLM 工具执行之后
                 if not getattr(ai_msg, "tool_calls", None):
+                    gt = langchain_tool.get_gt_obj(session_id)
+                    after_skill = await asyncio.to_thread(
+                        match_skill_after_llm, question, gt)
+                    if after_skill is not None:
+                        async for ev in self._run_skill_channel(session_id, question, state, tool_runs,
+                                                                 pre_matched_skill=after_skill):
+                            if ev is _SKILL_DONE:
+                                return
+                            yield ev
+                        return
+
+                    # 没命中 Skill，正常输出 LLM 的回答
                     text = (ai_msg.content or "").strip()
                     self._save_messages(session_id, state)
                     if text:
@@ -134,6 +149,19 @@ class GraphService:
                         "output_preview": _safe_preview(output, 200),
                     }}
 
+                # 6) 每轮工具执行完后，立刻检查后置 Skill
+                #    命中则立刻接管，截停 LLM 自己继续瞎调工具（避免 LLM 错传参数）
+                gt = langchain_tool.get_gt_obj(session_id)
+                after_skill = await asyncio.to_thread(
+                    match_skill_after_llm, question, gt)
+                if after_skill is not None:
+                    async for ev in self._run_skill_channel(session_id, question, state, tool_runs,
+                                                             pre_matched_skill=after_skill):
+                        if ev is _SKILL_DONE:
+                            return
+                        yield ev
+                    return
+
             # 超过最大轮数强制结束（正常流程到不了这里，只是兜底）
             self._save_messages(session_id, state)
             yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
@@ -152,6 +180,7 @@ class GraphService:
         question: str,
         state: Dict[str, Any],
         tool_runs: List[Dict[str, Any]],
+        pre_matched_skill: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Any, None]:
         """Skill 快速通道：命中且前置满足时，跑确定性编排闭环并逐步产出 SSE 事件。
 
@@ -160,26 +189,33 @@ class GraphService:
           state（AIMessage(tool_calls) + ToolMessage + 结论），最后产出 token/done，并以
           _SKILL_DONE 哨兵告知上层“本回合已结束，无需再走 LLM”。
         """
-        skill = match_skill(question)
+        skill = pre_matched_skill if pre_matched_skill is not None else match_skill(question)
         if skill is None:
             return
         gt = langchain_tool.get_gt_obj(session_id)
-        if getattr(gt, "net", None) is None:
-            # 前置不足：还没建电网（要先建网/断线，需 LLM 解析参数），交回正常流程
+        if pre_matched_skill is None and getattr(gt, "net", None) is None:
             return
+
+        # 按技能名分发到对应执行器（均为同步 generator，事件协议一致）
+        runner = run_overload_relief
+        if skill.get("name") == "load_sweep":
+            runner = run_load_sweep
 
         tool_calls: List[Dict[str, Any]] = []
         tool_msgs: List[ToolMessage] = []
         final_text = ""
         seq = 0
 
-        gen = run_overload_relief(gt, skill)
-        while True:
+        def _safe_next() -> Optional[Dict[str, Any]]:
             try:
-                # 编排引擎是同步 generator（内含阻塞的 runpp），逐步放线程池推进，
-                # 既不卡事件循环，又能把每一步实时下发前端。
-                ev = await asyncio.to_thread(next, gen)
+                return next(gen)
             except StopIteration:
+                return None
+
+        gen = runner(gt, skill)
+        while True:
+            ev = await asyncio.to_thread(_safe_next)
+            if ev is None:
                 break
 
             kind = ev.get("kind")

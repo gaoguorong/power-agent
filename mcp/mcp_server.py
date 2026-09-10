@@ -12,6 +12,7 @@ from config.model_config import AGENT_CONFIG, SUPPORTED_GRID_TYPES
 import numpy as np
 import pandas as pd
 from skills.skill_def import VOLTAGE_CORRECTION_SKILL, LOAD_SWEEP_SKILL
+from skills.skill_runner import run_load_sweep
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
@@ -152,6 +153,8 @@ class MCPState:
     def execute(self, tool_name: str, **kwargs) -> dict:
         if tool_name == "create_test_grid":
             return self.create_grid(kwargs.get("grid_type", "case9"))
+        if tool_name == "_skill_load_sweep":
+            return _run_skill_load_sweep(self.tools)
         return self.tools.execute_tool(tool_name, **kwargs)
 
 
@@ -169,6 +172,40 @@ def _get_state() -> MCPState:
 # ============================================================
 # 核心: MCP 分发引擎（纯函数，可本地调用）
 # ============================================================
+
+def _run_skill_load_sweep(tools: GridTools) -> dict:
+    """执行负荷扫描 Skill（2x/4x 倍率扫描线路过载），把生成器事件汇总成工具结果。
+
+    Skill 快速通道执行器是同步 generator，这里逐条消费：
+    tool 事件合并进结果明细，final 事件作为最终答复；扫描结束后负荷倍率已恢复 1.0。
+    """
+    steps = []
+    final_text = ""
+    detail = {}
+    aborted = False
+    try:
+        for ev in run_load_sweep(tools, LOAD_SWEEP_SKILL):
+            if ev.get("kind") == "tool":
+                steps.append({
+                    "工具": ev.get("name"),
+                    "输入": ev.get("input"),
+                    "结果": ev.get("output"),
+                })
+            elif ev.get("kind") == "final":
+                final_text = ev.get("text", "")
+                detail = ev.get("detail", {})
+                aborted = bool(ev.get("aborted"))
+        if aborted:
+            return {"success": False, "message": final_text or "前置条件不满足"}
+        return {
+            "success": True,
+            "message": final_text or "负荷扫描完成",
+            "执行步骤": steps,
+            **detail,
+        }
+    except Exception as e:
+        return {"success": False, "message": f"负荷扫描执行异常: {str(e)}"}
+
 
 def mcp_dispatch(request_body: dict) -> dict:
 
