@@ -82,12 +82,6 @@ async def chat_stream(
                     final_ai_text = ev_data.get("ai_text", "") or ""
                     need_flush_db = True
 
-                # 推给前端（SSE 标准格式：event: xxx\ndata: <JSON字符串>\n\n）
-                # ⚠️  注意1：这里的 JSON 就是 ev 本身（单层结构）。
-                #         之前错误地把 ev 整体包进外层 data 字段，导致前端 JSON.parse 之后多了一层嵌套，
-                #         前端拿不到 .data.text / .data.name 等字段 → 聊天区什么都不渲染。
-                # ⚠️  注意2：EventSourceResponse 接收的是 {"event": <SSE事件名>, "data": <字符串或可序列化对象>}
-                #         字符串不会被二次序列化，所以这里传 json_dumps_safe(ev) 正好。
                 yield {"event": ev_type, "data": json_dumps_safe(ev)}
 
             # ---------- 聊天结束后把元信息刷回数据库 ----------

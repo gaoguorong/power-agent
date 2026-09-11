@@ -7,7 +7,6 @@ GraphAgent：LangGraph 状态机定义（agent → inject_session → tools → 
 """
 import os
 import logging
-from typing import Annotated, TypedDict
 from langchain_core.messages import AnyMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
@@ -17,6 +16,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from agents.llm_client import create_llm
 from tools.langchain_tool import ALL_TOOLS
+from agents.AgentState import AgentState, ServiceState
 
 from config.model_config import SYSTEM_PROMPT
 
@@ -37,31 +37,30 @@ if not _llm_logger.handlers:                 # 防止 --reload 重复挂 handler
 
 class GraphAgent:
 
-    def __init__(self):
+    def __init__(self,tools_node, skill_check_node):
 
         self.llm_with_tools = LLM.bind_tools(ALL_TOOLS, tool_choice="auto", strict=True)
         self.memory_saver = MemorySaver()
         self.tool_node = ToolNode(ALL_TOOLS)
 
-        self.graph = StateGraph(self.AgentState)
-        self.graph.add_node("agent", self.agent_node)
-        self.graph.add_node("inject_session", self.inject_session_node)
-        self.graph.add_node("tools", self.tool_node)
+        graph = StateGraph(AgentState)
+        graph.add_node("agent", self.agent_node)
+        graph.add_node("inject_session", self.inject_session_node)
+        graph.add_node("tools", tools_node)
+        graph.add_node("skill_check", skill_check_node)
 
-        self.graph.add_edge(START, "agent")
-        self.graph.add_conditional_edges("agent", self.should_continue, {
+        graph.add_edge(START, "agent")
+        graph.add_conditional_edges("agent", self.should_continue, {
             "inject_session": "inject_session",
             END: END,
         })
-        self.graph.add_edge("inject_session", "tools")
-        self.graph.add_edge("tools", "agent")
-
-    # ============================================================
-    # 1. State 定义：messages(对话历史) + session_id(上下文路由键)
-    # ============================================================
-    class AgentState(TypedDict):
-        messages: Annotated[list[AnyMessage], add_messages]
-        session_id: str
+        graph.add_edge("inject_session", "tools")
+        graph.add_edge("tools", "skill_check")
+        graph.add_conditional_edges("skill_check", self.route_after_skill, {
+            "agent": "agent",
+            END: END,
+        })
+        self._compiled = graph.compile()
 
     # ============================================================
     # 2. Agent 节点：LLM 决定下一步（回答 or 调工具）
@@ -98,6 +97,17 @@ class GraphAgent:
         if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
             return "inject_session"
         return END
+
+    # ============================================================
+    # 5. 服务侧编译图：基础 agent 循环 + 服务注入的 tools/skill_check 节点。
+    #    不挂 checkpointer：历史由 GraphService 自管，每次调用全量传入，
+    #    避免 skill 半路接管后 checkpoint 残留半截消息。
+    # ============================================================
+    @staticmethod
+    def route_after_skill(state: "ServiceState"):
+        """skill_check 之后的路由：命中技能直接结束（服务层接管跑确定性闭环），
+        未命中回到 agent 继续下一轮。"""
+        return END if state.get("matched_skill") else "agent"
 
     def _print_result(self,title: str, result: dict):
         print(f"\n{'=' * 60}\n> {title}\n{'=' * 60}")
