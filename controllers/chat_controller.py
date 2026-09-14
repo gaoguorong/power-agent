@@ -45,10 +45,9 @@ async def chat_stream(
         row = await session_service.repo.get_by_id(session_id)
         if row:
             session_exists = True
-            # 顺便恢复电网和消息历史（如果MySQL里有）
+            # 顺便恢复电网对象（如果MySQL里有）
             try:
                 await session_service._restore_grid_if_needed(row)
-                await session_service.restore_messages_if_needed(row)
             except Exception:
                 pass
     except Exception as exc:
@@ -94,11 +93,6 @@ async def chat_stream(
                         pass
                     try:
                         await session_service.update_last_message(session_id, final_ai_text, delta_count=2)
-                    except Exception:
-                        pass
-                    # 消息历史落库：重启后点历史会话还能看到聊天记录
-                    try:
-                        await session_service.persist_messages(session_id)
                     except Exception:
                         pass
                 # 再更新内存（如果是降级模式）

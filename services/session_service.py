@@ -78,7 +78,6 @@ class SessionService:
         if not row:
             return None
         await self._restore_grid_if_needed(row)
-        await self.restore_messages_if_needed(row)
 
         return {
             "id": row.id,
@@ -86,7 +85,7 @@ class SessionService:
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             "config": row.get_config(),
-            "messages": self.graph.get_session_messages(session_id),
+            "messages": await self.graph.get_session_messages(session_id),
         }
 
     # ==========================================================
@@ -119,28 +118,6 @@ class SessionService:
         """聊天结束后更新消息数和最后一条预览"""
         await self.repo.update_last_message(session_id, ai_text, delta_count=delta_count)
         await self.db.commit()
-
-    async def persist_messages(self, session_id: str) -> None:
-        """聊天结束后把完整消息历史写入 MySQL（重启服务/点历史会话都能恢复）"""
-        items = self.graph.dump_session_messages(session_id)
-        if not items:
-            return
-        await self.repo.save_messages_json(
-            session_id, json.dumps(items, ensure_ascii=False, default=str)
-        )
-        await self.db.commit()
-
-    async def restore_messages_if_needed(self, row: PowerSession) -> None:
-        """内存里没有该会话的消息历史时，从 MySQL 恢复（服务重启后点开会话靠它）"""
-        sid = row.id
-        if self.graph.has_session_messages(sid):
-            return
-        try:
-            raw = await self.repo.get_messages_json(sid)
-            if raw:
-                self.graph.restore_session_messages(sid, json.loads(raw))
-        except Exception:
-            pass  # 恢复失败就算了，最多是看不到旧聊天记录
 
     # ==========================================================
     # 4. 删除会话 & 重置电网

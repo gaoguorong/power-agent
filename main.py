@@ -69,10 +69,10 @@ async def on_startup():
         print(f"⚠️  MySQL 初始化失败：{exc}")
         print("   请检查 .env 里的 MYSQL_URL 是否正确，MySQL 服务是否启动")
 
-    # --- 2.2 预热 GraphAgent（加载 LLM + 工具，第一次比较慢） ---
+    # --- 2.2 预热 GraphAgent（加载 LLM + AsyncSqliteSaver + 工具） ---
     try:
-        GraphService.get_instance()
-        print("✅ GraphAgent 已就绪（消息历史存进程内存）")
+        await GraphService.get_instance().ensure_init()
+        print("✅ GraphAgent 已就绪（消息历史由 AsyncSqliteSaver 持久化）")
     except Exception as exc:
 
         print(f"⚠️  GraphAgent 初始化失败：{exc}")

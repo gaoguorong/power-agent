@@ -67,7 +67,7 @@ async def get_session(
     row = memory_sessions.get(session_id)
     if row is not None:
         graph = GraphService.get_instance()
-        messages = graph.get_session_messages(session_id)
+        messages = await graph.get_session_messages(session_id)
         return ok({
             "id": row["id"],
             "name": row["name"],
