@@ -127,7 +127,7 @@ ACTIVE_LLM = "maas"
 LLM_CONFIG_MAAS = {
     "api_key": "sk-ws-H.PDYRHXM.DoWE.MEUCIGTDuhZXzW-hQfhhGlFMPO7njFCMPJWuSiJM9ck8arCEAiEArwO3gYdRLqcPL5DvR8kSC62c9o-Q8TKpjnVB7aN6XUk",
     "api_url": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen3.7-flash-2026-07-15",
+    "model": "qwen3.8-max-0902",
     "temperature": 0.1,
     "max_tokens": 2048,
     "timeout": 60,

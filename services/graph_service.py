@@ -33,8 +33,7 @@ from skills.skill_runner import (match_skill, match_skill_after_llm,
 
 from .graph_util import  _fill_tool_run, _sanitize_non_finite, _parse_json_if_possible, _messages_to_frontend_format,_safe_preview
 
-MAX_TOOL_ROUNDS = 10
-RECURSION_LIMIT = MAX_TOOL_ROUNDS * 4 + 5
+RECURSION_LIMIT = 45
 _SKILL_DONE = object()
 
 
@@ -77,11 +76,11 @@ class GraphService:
             self._initialized = True
             print("[GraphService] Checkpointer(AsyncSqliteSaver) 已就绪")
 
-    def _tools_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def _tools_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         last_msg = state["messages"][-1]
         if not (isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None)):
             return {}
-        return {"messages": self._execute_tools(last_msg.tool_calls)}
+        return {"messages": await asyncio.to_thread(self._execute_tools, last_msg.tool_calls)}
 
     def _skill_check_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         gt = langchain_tool.get_gt_obj(state.get("session_id", "default"))
@@ -124,6 +123,7 @@ class GraphService:
 
         cfg = {"configurable": {"thread_id": session_id},
                "recursion_limit": RECURSION_LIMIT}
+
         state: Dict[str, Any] = {
             "messages": [HumanMessage(content=question)],
             "session_id": session_id,

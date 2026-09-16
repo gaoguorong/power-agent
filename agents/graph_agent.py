@@ -14,12 +14,15 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.memory import InMemorySaver
 
 from agents.llm_client import create_llm
 from tools.langchain_tool import ALL_TOOLS
 from agents.AgentState import AgentState
 
 from config.model_config import SYSTEM_PROMPT
+
+import aiosqlite
 
 CHECKPOINT_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "checkpoints.db")
 
@@ -66,7 +69,6 @@ class GraphAgent:
         """异步初始化：打开 aiosqlite 连接 + 挂 AsyncSqliteSaver + 编译图"""
         if self.checkpointer is not None:
             return
-        import aiosqlite
         os.makedirs(os.path.dirname(CHECKPOINT_DB), exist_ok=True)
         self._sqlite_conn = await aiosqlite.connect(CHECKPOINT_DB)
         self.checkpointer = AsyncSqliteSaver(self._sqlite_conn)
