@@ -1,18 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-GraphAgent 单例服务：驱动编译后的 LangGraph 图，把逐节点产出转成 SSE 事件给前端。
 
-编译图状态机：START → agent →（有 tool_calls ? inject_session → tools
-→ skill_check → agent）* → END
-
-为什么用 graph.astream(stream_mode="updates") 而不是 ainvoke 一把梭？
-因为要在每一步中间插播 tool_start / tool_end 事件，前端靠它们渲染
-"AI 正在做什么"。astream 逐节点产出更新，服务层把更新转成与手动循环
-完全一致的事件序列。
-
-消息历史不再手动维护——LangGraph Checkpointer(AsyncSqliteSaver) 自动存/取
-每个 thread_id 的 state snapshot，多轮对话上下文、服务重启恢复全靠它。
-"""
 import json
 import asyncio
 import math
@@ -38,11 +24,6 @@ _SKILL_DONE = object()
 
 
 class GraphService:
-    """全进程单例，包装唯一的 GraphAgent，提供聊天与电网状态查询。
-
-    用法：GraphService.get_instance()   # 同步拿实例
-          await graph.ensure_init()      # 确保 checkpointer 已就绪
-    """
 
     _instance: Optional["GraphService"] = None
 

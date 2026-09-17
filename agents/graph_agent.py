@@ -13,8 +13,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.mysql.aio import AIOMySQLSaver
 
 from agents.llm_client import create_llm
 from tools.langchain_tool import ALL_TOOLS
@@ -66,13 +65,12 @@ class GraphAgent:
         self._graph = graph
 
     async def async_init(self):
-        """异步初始化：打开 aiosqlite 连接 + 挂 AsyncSqliteSaver + 编译图"""
-        if self.checkpointer is not None:
-            return
-        os.makedirs(os.path.dirname(CHECKPOINT_DB), exist_ok=True)
-        self._sqlite_conn = await aiosqlite.connect(CHECKPOINT_DB)
-        self.checkpointer = AsyncSqliteSaver(self._sqlite_conn)
-        self._compiled = self._graph.compile(checkpointer=self.checkpointer)
+
+        async with AIOMySQLSaver.from_conn_string(
+            "mysql+aiomysql://root:Taylor081930@localhost:3306/power_agent"
+        ) as saver:
+            self.checkpointer = saver
+            self._compiled = self._graph.compile(checkpointer=self.checkpointer)
 
     def agent_node(self, state: AgentState):
         messages_with_sys = [("system", SYSTEM_PROMPT)] + state["messages"]

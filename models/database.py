@@ -28,7 +28,6 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
-
 # ========== 3. 所有 ORM 模型的基类 ==========
 class Base(DeclarativeBase):
     """所有表模型都继承这个类"""

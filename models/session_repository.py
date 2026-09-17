@@ -6,11 +6,10 @@
 """
 from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .session import PowerSession
-from .session_message import SessionMessages
 
 
 class SessionRepository:
@@ -45,14 +44,6 @@ class SessionRepository:
         stmt = stmt.order_by(PowerSession.updated_at.desc()).limit(limit)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
-
-    async def count_all(self, user_id: Optional[str] = None) -> int:
-        """统计会话总数"""
-        stmt = select(func.count(PowerSession.id)).where(PowerSession.deleted_at.is_(None))
-        if user_id:
-            stmt = stmt.where(PowerSession.user_id == user_id)
-        result = await self.db.execute(stmt)
-        return int(result.scalar() or 0)
 
     # ============== 增 ==============
 
@@ -132,7 +123,6 @@ class SessionRepository:
         return True
 
     # ============== 删（软删） ==============
-
     async def soft_delete(self, session_id: str) -> bool:
         """软删除：不真删行，只是打个时间戳"""
         row = await self.get_by_id(session_id)
@@ -140,22 +130,3 @@ class SessionRepository:
             return False
         row.deleted_at = datetime.now()
         return True
-
-    # ============== 消息历史（聊天记录持久化） ==============
-
-    async def get_messages_json(self, session_id: str) -> Optional[str]:
-        """读该会话的消息历史 JSON（没有则返回 None）"""
-        stmt = select(SessionMessages.messages_json).where(
-            SessionMessages.session_id == session_id
-        )
-        result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
-
-    async def save_messages_json(self, session_id: str, messages_json: str) -> None:
-        """整份覆盖保存消息历史（没有行就新建，有则更新）"""
-        row = await self.db.get(SessionMessages, session_id)
-        if row is None:
-            row = SessionMessages(session_id=session_id)
-            self.db.add(row)
-        row.messages_json = messages_json
-        await self.db.flush()
