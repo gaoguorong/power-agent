@@ -55,7 +55,10 @@ class GraphService:
             self._compiled = self._graph_agent._compiled
             self._checkpointer = self._graph_agent.checkpointer
             self._initialized = True
-            print("[GraphService] Checkpointer(AsyncSqliteSaver) 已就绪")
+            print("[GraphService] Checkpointer(AIOMySQLSaver) 已就绪")
+
+    async def close(self):
+        await self._graph_agent.close()
 
     async def _tools_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         last_msg = state["messages"][-1]
@@ -356,4 +359,3 @@ class GraphService:
 # ==============================================================
 # 模块内小工具函数
 # ==============================================================
-

@@ -55,26 +55,25 @@ async def get_session(
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取单个会话详情 + 完整消息历史（刷新页面时恢复聊天记录）"""
-    # 先查 MySQL
+    # 先查 MySQL（业务元数据 + AIOMySQLSaver 的 messages）
     try:
         svc = SessionService(db)
         detail = await svc.get_session_detail(session_id)
         if detail:
             return ok(detail)
     except Exception as exc:
-        print(f"[降级] get_session MySQL失败，查内存：{exc}")
-    # 再查内存
+        print(f"[降级] get_session MySQL失败，查内存元数据：{exc}")
+
+    # 降级：只返回内存里的元数据（messages 随 AIOMySQLSaver 已恢复，这里不再额外查）
     row = memory_sessions.get(session_id)
     if row is not None:
-        graph = GraphService.get_instance()
-        messages = await graph.get_session_messages(session_id)
         return ok({
             "id": row["id"],
             "name": row["name"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "config": row["config"],
-            "messages": messages,
+            "messages": [],
         })
     raise HTTPException(status_code=404, detail="会话不存在或已删除")
 

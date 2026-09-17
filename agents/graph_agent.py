@@ -8,6 +8,7 @@ GraphAgent：LangGraph 状态机定义（agent → inject_session → tools → 
 import os
 import asyncio
 import logging
+import aiomysql
 from langchain_core.messages import AnyMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
@@ -43,6 +44,7 @@ class GraphAgent:
         self.tool_node = ToolNode(ALL_TOOLS)
         self.checkpointer = None
         self._compiled = None
+        self._mysql_conn = None
 
         graph = StateGraph(AgentState)
         graph.add_node("agent", self.agent_node)
@@ -64,12 +66,20 @@ class GraphAgent:
         self._graph = graph
 
     async def async_init(self):
+        conn_kwargs = AIOMySQLSaver.parse_conn_string(DATABASE_CONFIG["mysql_url"])
+        self._mysql_conn = await aiomysql.connect(**conn_kwargs, autocommit=True)
+        self.checkpointer = AIOMySQLSaver(conn=self._mysql_conn)
+        await self.checkpointer.setup()
+        self._compiled = self._graph.compile(checkpointer=self.checkpointer)
 
-        async with AIOMySQLSaver.from_conn_string(
-            DATABASE_CONFIG
-        ) as saver:
-            self.checkpointer = saver
-            self._compiled = self._graph.compile(checkpointer=self.checkpointer)
+    async def close(self):
+        if self._mysql_conn is not None:
+            try:
+                self._mysql_conn.close()
+                await self._mysql_conn.wait_closed()
+            except Exception:
+                pass
+            self._mysql_conn = None
 
     def agent_node(self, state: AgentState):
         messages_with_sys = [("system", SYSTEM_PROMPT)] + state["messages"]
@@ -99,21 +109,6 @@ class GraphAgent:
     def route_after_skill(state: "AgentState"):
         return END if state.get("matched_skill") else "agent"
 
-    def _print_result(self, title: str, result: dict):
-        print(f"\n{'=' * 60}\n> {title}\n{'=' * 60}")
-        last_msg = result["messages"][-1]
-        print("[最终回答]:\n", last_msg.content)
-        print(f"\n[对话统计] 本次消息数: {len(result['messages'])}")
-        for i, m in enumerate(result["messages"]):
-            tag = type(m).__name__
-            if isinstance(m, ToolMessage):
-                content_preview = m.content[:200].replace("\n", " ")
-                print(f"  [{i}] {tag} status={m.status} name={m.name} preview='{content_preview}...'")
-            elif isinstance(m, AIMessage) and m.tool_calls:
-                print(f"  [{i}] {tag} tool_calls={[(tc['name'], list(tc['args'].keys())) for tc in m.tool_calls]}")
-            else:
-                txt = (m.content or "").replace("\n", " ")[:150]
-                print(f"  [{i}] {tag} content='{txt}...'")
 
 
 if __name__ == "__main__":

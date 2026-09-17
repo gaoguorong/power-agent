@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
-from config.model_config import DATABASE_CONFIG
+from config.mysql_config import DATABASE_CONFIG
 
 # ========== 1. 创建异步引擎 ==========
 # 说明：pool_pre_ping=True 会在获取连接前先ping一下，避免拿到断开的连接

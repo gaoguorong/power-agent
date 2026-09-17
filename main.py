@@ -69,10 +69,10 @@ async def on_startup():
         print(f"⚠️  MySQL 初始化失败：{exc}")
         print("   请检查 .env 里的 MYSQL_URL 是否正确，MySQL 服务是否启动")
 
-    # --- 2.2 预热 GraphAgent（加载 LLM + AsyncSqliteSaver + 工具） ---
+    # --- 2.2 预热 GraphAgent（加载 LLM + AIOMySQLSaver + 工具） ---
     try:
         await GraphService.get_instance().ensure_init()
-        print("✅ GraphAgent 已就绪（消息历史由 AsyncSqliteSaver 持久化）")
+        print("✅ GraphAgent 已就绪（消息历史由 AIOMySQLSaver 持久化）")
     except Exception as exc:
 
         print(f"⚠️  GraphAgent 初始化失败：{exc}")
@@ -87,6 +87,17 @@ async def on_startup():
     print(f"🌐 服务地址：http://{SERVER_CONFIG['host']}:{SERVER_CONFIG['port']}")
     print(f"📖 Swagger文档：http://localhost:{SERVER_CONFIG['port']}/docs")
     print("=" * 60)
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """服务关闭时释放资源"""
+    print("🛑 正在关闭服务...")
+    try:
+        await GraphService.get_instance().close()
+        print("✅ GraphAgent MySQL 连接已关闭")
+    except Exception as exc:
+        print(f"⚠️  关闭 GraphAgent 时出错：{exc}")
 
 
 # ====================================================================
