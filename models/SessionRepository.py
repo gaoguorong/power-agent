@@ -9,7 +9,7 @@ from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .session import PowerSession
+from .PowerSession import PowerSession
 
 
 class SessionRepository:

@@ -20,8 +20,7 @@ from tools.langchain_tool import ALL_TOOLS
 from agents.AgentState import AgentState
 
 from config.model_config import SYSTEM_PROMPT
-
-import aiosqlite
+from config.mysql_config import DATABASE_CONFIG
 
 CHECKPOINT_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "checkpoints.db")
 
@@ -67,7 +66,7 @@ class GraphAgent:
     async def async_init(self):
 
         async with AIOMySQLSaver.from_conn_string(
-            "mysql+aiomysql://root:Taylor081930@localhost:3306/power_agent"
+            DATABASE_CONFIG
         ) as saver:
             self.checkpointer = saver
             self._compiled = self._graph.compile(checkpointer=self.checkpointer)

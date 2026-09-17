@@ -1,7 +1,6 @@
-
 import json
-import asyncio
 import math
+import asyncio
 import traceback
 from typing import Any, Dict, List, Optional, AsyncGenerator
 
@@ -17,7 +16,8 @@ from tools.langchain_tool import ALL_TOOLS
 from skills.skill_runner import (match_skill, match_skill_after_llm,
                                    run_overload_relief, run_load_sweep)
 
-from .graph_util import  _fill_tool_run, _sanitize_non_finite, _parse_json_if_possible, _messages_to_frontend_format,_safe_preview
+from .graph_util import (_safe_preview, _sanitize_non_finite, _parse_json_if_possible,
+                         _fill_tool_run,_messages_to_frontend_format)
 
 RECURSION_LIMIT = 45
 _SKILL_DONE = object()
@@ -351,3 +351,9 @@ class GraphService:
             meta["has_pf_result"] = True
 
         return meta
+
+
+# ==============================================================
+# 模块内小工具函数
+# ==============================================================
+

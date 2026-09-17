@@ -13,8 +13,8 @@ from .database import (
     get_db_session,
     create_all_tables,
 )
-from .session import PowerSession
-from .session_repository import SessionRepository
+from .PowerSession import PowerSession
+from .SessionRepository import SessionRepository
 
 __all__ = [
     "engine",

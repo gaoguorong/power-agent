@@ -12,8 +12,8 @@ from typing import Optional, List, Dict, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.session_repository import SessionRepository
-from models.session import PowerSession
+from models.SessionRepository import SessionRepository
+from models.PowerSession import PowerSession
 from schemas import SessionConfig, SessionCreateRequest, SessionUpdateRequest
 from config.model_config import SUPPORTED_GRID_TYPES
 from tools.langchain_tool import get_gt_obj
