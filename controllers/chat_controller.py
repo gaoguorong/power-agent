@@ -42,12 +42,12 @@ async def chat_stream(
     session_service = None
     try:
         session_service = SessionService(db)
-        row = await session_service.repo.get_by_id(session_id)
-        if row:
+        powerSession = await session_service.session_repo.get_by_id(session_id)
+        if powerSession:
             session_exists = True
             # 顺便恢复电网对象（如果MySQL里有）
             try:
-                await session_service._restore_grid_if_needed(row)
+                await session_service._restore_grid_if_needed(powerSession)
             except Exception:
                 pass
     except Exception as exc:

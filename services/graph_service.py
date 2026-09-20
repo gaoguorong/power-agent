@@ -1,5 +1,7 @@
 import json
 import math
+import uuid
+import time
 import asyncio
 import traceback
 from typing import Any, Dict, List, Optional, AsyncGenerator
@@ -14,7 +16,7 @@ from schemas.tool_result import normalize_tool_result
 from tools import langchain_tool
 from tools.langchain_tool import ALL_TOOLS
 from skills.skill_runner import (match_skill, match_skill_after_llm,
-                                   run_overload_relief, run_load_sweep)
+                                   run_overload_relief)
 
 from .graph_util import (_safe_preview, _sanitize_non_finite, _parse_json_if_possible,
                          _fill_tool_run,_messages_to_frontend_format)
@@ -67,7 +69,7 @@ class GraphService:
         return {"messages": await asyncio.to_thread(self._execute_tools, last_msg.tool_calls)}
 
     def _skill_check_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        gt = langchain_tool.get_gt_obj(state.get("session_id", "default"))
+        gt = langchain_tool.get_grid_tools_obj(state.get("session_id", "default"))
         skill = match_skill_after_llm(state.get("question", ""), gt)
         return {"matched_skill": skill}
 
@@ -79,7 +81,8 @@ class GraphService:
         tuple_ = await self._checkpointer.aget_tuple(config)
         if tuple_ is None or not tuple_.checkpoint:
             return []
-        msgs = tuple_.checkpoint.get("messages", [])
+        channel_values = tuple_.checkpoint.get("channel_values", {})
+        msgs = channel_values.get("messages", [])
         return [m for m in msgs if isinstance(m, BaseMessage)]
 
     async def _checkpoint_put(self, session_id: str, state: Dict[str, Any], source: str = "skill") -> None:
@@ -87,8 +90,27 @@ class GraphService:
         try:
             config = {"configurable": {"thread_id": session_id}}
             tuple_ = await self._checkpointer.aget_tuple(config)
-            existing = tuple_.checkpoint if tuple_ else {}
-            checkpoint = {**existing, "messages": state["messages"]}
+
+            if tuple_ is not None and tuple_.checkpoint:
+                existing_cp = tuple_.checkpoint
+                channel_values = dict(existing_cp.get("channel_values", {}))
+                channel_values["messages"] = state["messages"]
+                checkpoint = dict(existing_cp)
+                checkpoint["channel_values"] = channel_values
+            else:
+                checkpoint = {
+                    "v": 4,
+                    "id": str(uuid.uuid4()),
+                    "ts": time.time_ns() // 1_000_000,
+                    "channel_values": {
+                        "messages": state["messages"],
+                        "session_id": session_id,
+                    },
+                    "channel_versions": {},
+                    "versions_seen": {},
+                    "updated_channels": ["messages"],
+                }
+
             step = ((tuple_.metadata or {}).get("step", 0) + 1) if tuple_ else 0
             await self._checkpointer.aput(config, checkpoint, {"source": source, "step": step})
         except Exception:
@@ -136,7 +158,7 @@ class GraphService:
                         msgs.append(ai_msg)
 
                         if not getattr(ai_msg, "tool_calls", None):
-                            gt = langchain_tool.get_gt_obj(session_id)
+                            gt = langchain_tool.get_grid_tools_obj(session_id)
                             after_skill = await asyncio.to_thread(
                                 match_skill_after_llm, question, gt)
                             if after_skill is not None:
@@ -210,13 +232,9 @@ class GraphService:
         skill = pre_matched_skill if pre_matched_skill is not None else match_skill(question)
         if skill is None:
             return
-        gt = langchain_tool.get_gt_obj(session_id)
+        gt = langchain_tool.get_grid_tools_obj(session_id)
         if pre_matched_skill is None and getattr(gt, "net", None) is None:
             return
-
-        runner = run_overload_relief
-        if skill.get("name") == "load_sweep":
-            runner = run_load_sweep
 
         tool_calls: List[Dict[str, Any]] = []
         tool_msgs: List[ToolMessage] = []
@@ -229,7 +247,7 @@ class GraphService:
             except StopIteration:
                 return None
 
-        gen = runner(gt, skill)
+        gen = run_overload_relief(gt, skill)
         while True:
             ev = await asyncio.to_thread(_safe_next)
             if ev is None:

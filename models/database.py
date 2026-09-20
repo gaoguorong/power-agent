@@ -9,7 +9,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 from config.mysql_config import DATABASE_CONFIG
 
-# ========== 1. 创建异步引擎 ==========
+# ========== 1. 创建异步引擎（连接池） ==========
 # 说明：pool_pre_ping=True 会在获取连接前先ping一下，避免拿到断开的连接
 engine = create_async_engine(
     DATABASE_CONFIG["mysql_url"],
@@ -33,7 +33,6 @@ class Base(DeclarativeBase):
     """所有表模型都继承这个类"""
     pass
 
-
 # ========== 4. FastAPI 用的依赖：每次请求给一个独立的 DB Session ==========
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
@@ -54,7 +53,6 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             except Exception:
                 await session.rollback()
                 raise
-
 
 # ========== 5. 建表工具：服务启动时调用一次 ==========
 async def create_all_tables():

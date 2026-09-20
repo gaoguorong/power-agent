@@ -4,7 +4,7 @@ from tools.grid_tools import GridTools
 
 _sessions: Dict[str, GridTools] = {}
 
-def get_gt_obj(session_id: str = "default") -> GridTools:
+def get_grid_tools_obj(session_id: str = "default") -> GridTools:
     if session_id not in _sessions:
         _sessions[session_id] = GridTools()
     return _sessions[session_id]
@@ -25,7 +25,7 @@ def create_test_grid(grid_type: str = "case30", session_id: str = "default") -> 
         session_id: 会话ID，用于多会话隔离
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         result = gt.create_test_grid(grid_type=grid_type)
         # 补丁：创建成功后把电网类型记到 GridTools 实例上，
         # 方便 session_service.get_session_grid_meta 存 MySQL，服务重启后恢复
@@ -50,7 +50,7 @@ def load_grid_from_file(file_path: str, repair_isolated_gens: bool = True,
         session_id: 会话ID，用于多会话隔离
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         result = gt.load_grid_from_file(file_path=file_path,
                                         repair_isolated_gens=repair_isolated_gens)
         # 记录来源文件，供服务重启后恢复（区别于内置算例的 grid_type）
@@ -72,7 +72,7 @@ def run_ac_power_flow(algorithm: str = "nr", max_iteration: int = 30,
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.run_ac_power_flow(algorithm=algorithm,
                                      max_iteration=max_iteration,
                                      tolerance=tolerance)
@@ -93,7 +93,7 @@ def run_n1_security_check(element_type: str = "line",
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.run_n1_security_check(element_type=element_type,
                                          max_iterations=max_iterations,
                                          element_ids=element_ids)
@@ -112,7 +112,7 @@ def get_line_overload_summary(threshold: float = 20,
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.get_line_overload_summary(threshold=threshold,
                                              skip_runpp=skip_runpp)
     except Exception as e:
@@ -132,7 +132,7 @@ def get_voltage_violation_summary(vmin_pu: float = 0.95,
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.get_voltage_violation_summary(vmin_pu=vmin_pu,
                                                  vmax_pu=vmax_pu,
                                                  skip_runpp=skip_runpp)
@@ -149,7 +149,7 @@ def set_load_scale(factor: float = 1.0, session_id: str = "default") -> Dict:
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.set_load_scale(factor=factor)
     except Exception as e:
         return {"success": False, "message": f"负荷缩放失败: {str(e)}"}
@@ -168,7 +168,7 @@ def generate_risk_report(vmin_pu: float = 0.95, vmax_pu: float = 1.05,
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.generate_risk_report(vmin_pu=vmin_pu, vmax_pu=vmax_pu,
                                         overload_threshold=overload_threshold,
                                         top_n=top_n)
@@ -184,7 +184,7 @@ def query_knowledge(topic: str = None, session_id: str = "default") -> Dict:
         session_id: 会话ID（仅用于统一接口，知识查询本身无状态）
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.query_knowledge(topic=topic)
     except Exception as e:
         return {"success": False, "message": f"知识查询失败: {str(e)}"}
@@ -198,7 +198,7 @@ def list_grid_elements(element_type: str = "all", session_id: str = "default") -
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.list_grid_elements(element_type=element_type)
     except Exception as e:
         return {"success": False, "message": f"列出元件失败: {str(e)}"}
@@ -221,7 +221,7 @@ def analyze_with_outage(element_type: str, element_ids: List[int],
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.analyze_with_outage(element_type=element_type,
                                        element_ids=element_ids,
                                        analysis=analysis,
@@ -247,7 +247,7 @@ def set_element_status(element_type: str, element_ids: List[int],
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.set_element_status(element_type=element_type,
                                      element_ids=element_ids,
                                      in_service=in_service)
@@ -262,7 +262,7 @@ def get_grid_topology(session_id: str = "default") -> Dict:
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.get_grid_topology()
     except Exception as e:
         return {"success": False, "message": f"拓扑查询失败: {str(e)}"}
@@ -275,7 +275,7 @@ def calculate_loss_analysis(session_id: str = "default") -> Dict:
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.calculate_loss_analysis()
     except Exception as e:
         return {"success": False, "message": f"损耗分析失败: {str(e)}"}
@@ -317,7 +317,7 @@ def calc_gen_sensitivity(target_line_ids: List[int] = None,
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.calc_gen_sensitivity(target_line_ids=target_line_ids,
                                        delta_mw=delta_mw,
                                        max_gens=max_gens)
@@ -335,7 +335,7 @@ def adjust_gen_output(gen_id: int, delta_mw: float, session_id: str = "default")
         session_id: 会话ID
     """
     try:
-        gt = get_gt_obj(session_id)
+        gt = get_grid_tools_obj(session_id)
         return gt.adjust_gen_output(gen_id=gen_id, delta_mw=delta_mw)
     except Exception as e:
         return {"success": False, "message": f"机组出力调整失败: {str(e)}"}

@@ -95,9 +95,12 @@ class GridTools:
         try:
             resolved = self._resolve_grid_file_path(file_path)
             if resolved is None:
+                self.net = None
+                self.results_cache = {}
                 return {"success": False,
                         "message": f"找不到电网模型文件: {file_path}"
-                                   f"（支持 .json/.p/.pickle/.xlsx/.xls）"}
+                                   f"（支持 .json/.p/.pickle/.xlsx/.xls）。"
+                                   f"请确认文件存在于项目根目录或 '实际电网数据' 子目录下。"}
 
             ext = os.path.splitext(resolved)[1].lower()
             if ext == ".json":
@@ -107,6 +110,8 @@ class GridTools:
             elif ext in (".xlsx", ".xls"):
                 net = pp.from_excel(resolved)
             else:
+                self.net = None
+                self.results_cache = {}
                 return {"success": False,
                         "message": f"不支持的文件格式: {ext}"
                                    f"（仅支持 .json/.p/.pickle/.xlsx/.xls）"}
@@ -115,7 +120,6 @@ class GridTools:
             self.results_cache = {}
             self._load_original_p_mw = None
             self._load_original_q_mvar = None
-            # 记录来源文件，供服务重启后按路径恢复（区别于内置算例的 grid_type）
             self._source_file = resolved
 
             # 可选：修复孤立零出力机组（真实电网数据常见缺陷）
@@ -244,11 +248,31 @@ class GridTools:
             "重挂映射(机组ID→母线)": remap,
         }
 
+    _GRID_ALIAS_MAP = {
+        "兰考": ["nankao", "lankao"],
+        "开封": ["kaifeng"],
+        "郑州": ["zhengzhou", "zz"],
+        "洛阳": ["luoyang"],
+        "南阳": ["nanyang"],
+        "信阳": ["xinyang"],
+        "周口": ["zhoukou"],
+        "商丘": ["shangqiu"],
+        "漯河": ["luohe"],
+        "平顶山": ["pingdingshan"],
+        "安阳": ["anyang"],
+        "鹤壁": ["hebi"],
+        "新乡": ["xinxiang"],
+        "焦作": ["jiaozuo"],
+        "濮阳": ["puyang"],
+    }
+    _SUPPORTED_EXT = (".json", ".p", ".pickle", ".xlsx", ".xls")
+
     def _resolve_grid_file_path(self, file_path: str):
         """解析电网模型文件路径。
 
         绝对路径 / 相对当前工作目录能命中的，直接返回；
-        否则在项目根目录与“实际电网数据”目录下按文件名查找。
+        否则在项目根目录与"实际电网数据"目录下按文件名查找，
+        支持【中文别名→拼音】、【部分匹配】、【自动补扩展名】。
         找不到返回 None。
         """
 
@@ -263,11 +287,59 @@ class GridTools:
             os.path.join(project_root, "实际电网数据", file_path),
             os.path.join(project_root, "实际电网数据", os.path.basename(file_path)),
         ]
+
+        base_no_ext, ext = os.path.splitext(file_path)
+        if not ext:
+            for e in self._SUPPORTED_EXT:
+                candidates.append(os.path.join(project_root, base_no_ext + e))
+                candidates.append(os.path.join(project_root, "实际电网数据", base_no_ext + e))
+
         for c in candidates:
             if os.path.isfile(c):
                 return c
-        return None
 
+        search_dirs = [
+            os.path.join(project_root, "实际电网数据"),
+            project_root,
+        ]
+
+        alias_keys = []
+        for cn_word, pinyin_list in self._GRID_ALIAS_MAP.items():
+            if cn_word in file_path:
+                alias_keys.extend(pinyin_list)
+
+        lower_name = os.path.basename(file_path).lower()
+        for seg in lower_name.replace("_", " ").replace("-", " ").split():
+            if len(seg) >= 2 and seg not in alias_keys:
+                alias_keys.append(seg)
+
+        for d in search_dirs:
+            if not os.path.isdir(d):
+                continue
+            try:
+                all_files = os.listdir(d)
+            except OSError:
+                continue
+            for f in all_files:
+                fname_lower = f.lower()
+                if not fname_lower.endswith(self._SUPPORTED_EXT):
+                    continue
+                for kw in alias_keys:
+                    if kw in fname_lower:
+                        return os.path.abspath(os.path.join(d, f))
+
+        for d in search_dirs:
+            if not os.path.isdir(d):
+                continue
+            try:
+                all_files = os.listdir(d)
+            except OSError:
+                continue
+            for f in all_files:
+                if f.lower().endswith(self._SUPPORTED_EXT):
+                    return os.path.abspath(os.path.join(d, f))
+
+        return None
     def _create_simple_grid(self) -> pp.pandapowerNet:
         """创建简单的测试电网
         

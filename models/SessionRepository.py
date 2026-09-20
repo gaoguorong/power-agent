@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 会话表的 CRUD 封装
-让接口代码里不要直接写 SQLAlchemy 查询，所有DB操作都放这里
-写法尽量简单直白，每个方法只干一件事
+所有DB操作都在这一层，Service 不直接碰 SQLAlchemy
+写操作统一用单条 SQL，避免先 SELECT 再 UPDATE 的两次交互
 """
 from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import select
+from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .PowerSession import PowerSession
@@ -21,11 +21,8 @@ class SessionRepository:
     # ============== 查 ==============
 
     async def get_by_id(self, session_id: str) -> Optional[PowerSession]:
-        """按ID查单个会话（排除已软删的）"""
-        stmt = select(PowerSession).where(
-            PowerSession.id == session_id,
-            PowerSession.deleted_at.is_(None)
-        )
+        """按ID查单个会话"""
+        stmt = select(PowerSession).where(PowerSession.id == session_id)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -38,7 +35,7 @@ class SessionRepository:
         会话列表：按最后更新时间倒序（最近聊过的在最上面）
         user_id 传 None 就查全部（当前单用户场景）
         """
-        stmt = select(PowerSession).where(PowerSession.deleted_at.is_(None))
+        stmt = select(PowerSession)
         if user_id:
             stmt = stmt.where(PowerSession.user_id == user_id)
         stmt = stmt.order_by(PowerSession.updated_at.desc()).limit(limit)
@@ -65,34 +62,40 @@ class SessionRepository:
         if config:
             row.set_config(config)
         self.db.add(row)
-        await self.db.flush()  # 让 id 等默认值生效
+        await self.db.flush()
         return row
 
-    # ============== 改 ==============
+    # ============== 改（全用单条 SQL） ==============
 
     async def update_name(self, session_id: str, new_name: str) -> bool:
         """修改会话名称"""
-        row = await self.get_by_id(session_id)
-        if not row:
-            return False
-        row.name = new_name[:128]  # 防超长
-        return True
+        stmt = (
+            update(PowerSession)
+            .where(PowerSession.id == session_id)
+            .values(name=new_name[:128])
+        )
+        result = await self.db.execute(stmt)
+        return result.rowcount > 0
 
     async def update_config(self, session_id: str, config: dict) -> bool:
         """修改会话配置（全量覆盖，调用方自己传完整的）"""
-        row = await self.get_by_id(session_id)
-        if not row:
-            return False
-        row.set_config(config)
-        return True
+        stmt = (
+            update(PowerSession)
+            .where(PowerSession.id == session_id)
+            .values(config_json=self._dump_json(config))
+        )
+        result = await self.db.execute(stmt)
+        return result.rowcount > 0
 
     async def update_grid_meta(self, session_id: str, meta: dict) -> bool:
         """更新电网恢复元信息"""
-        row = await self.get_by_id(session_id)
-        if not row:
-            return False
-        row.set_grid_meta(meta)
-        return True
+        stmt = (
+            update(PowerSession)
+            .where(PowerSession.id == session_id)
+            .values(grid_meta_json=self._dump_json(meta))
+        )
+        result = await self.db.execute(stmt)
+        return result.rowcount > 0
 
     async def update_last_message(
         self,
@@ -103,30 +106,41 @@ class SessionRepository:
         """
         每次聊天结束调用：
         - 刷新"最后一条消息预览"（只留前500字给列表展示）
-        - 累加消息数
+        - 累加消息数（SQL 层面 +delta_count，避免并发不准）
         """
-        row = await self.get_by_id(session_id)
-        if not row:
-            return False
-        if message_preview:
-            row.last_message = message_preview[:500]
-        row.message_count = max(0, row.message_count + delta_count)
-        return True
+        stmt = (
+            update(PowerSession)
+            .where(PowerSession.id == session_id)
+            .values(
+                last_message=message_preview[:500] if message_preview else None,
+                message_count=PowerSession.message_count + delta_count,
+            )
+        )
+        result = await self.db.execute(stmt)
+        return result.rowcount > 0
 
     async def reset_count_and_preview(self, session_id: str) -> bool:
-        """重置会话电网时调用（清空消息预览，消息数保留）"""
-        row = await self.get_by_id(session_id)
-        if not row:
-            return False
-        row.last_message = None
-        row.set_grid_meta({})  # 电网元信息也清空
-        return True
+        """重置会话电网时调用（清空消息预览 + 电网元信息，消息数保留）"""
+        stmt = (
+            update(PowerSession)
+            .where(PowerSession.id == session_id)
+            .values(last_message=None, grid_meta_json=self._dump_json({}))
+        )
+        result = await self.db.execute(stmt)
+        return result.rowcount > 0
 
-    # ============== 删（软删） ==============
+    # ============== 删 ==============
+
     async def soft_delete(self, session_id: str) -> bool:
-        """软删除：不真删行，只是打个时间戳"""
-        row = await self.get_by_id(session_id)
-        if not row:
-            return False
-        row.deleted_at = datetime.now()
-        return True
+        """删除会话（物理移除）"""
+        stmt = delete(PowerSession).where(PowerSession.id == session_id)
+        result = await self.db.execute(stmt)
+        return result.rowcount > 0
+
+    # ============== 内部工具 ==============
+
+    @staticmethod
+    def _dump_json(data: dict) -> str:
+        """把 dict 序列化为 JSON 字符串（ensure_ascii=False 保留中文）"""
+        import json
+        return json.dumps(data, ensure_ascii=False)

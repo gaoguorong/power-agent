@@ -12,7 +12,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
 
-
 class PowerSession(Base):
     """
     智能体会话业务元数据表
@@ -49,7 +48,7 @@ class PowerSession(Base):
         onupdate=datetime.now,
         comment="最后更新时间"
     )
-    deleted_at: Mapped[datetime | None] = mapped_column("DELETED_AT", DateTime, default=None, comment="软删除时间")
+
 
 
     def get_config(self) -> dict:

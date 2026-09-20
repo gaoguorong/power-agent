@@ -20,8 +20,8 @@ async def create_session(
 ):
     """新建一个会话"""
     try:
-        svc = SessionService(db)
-        result = await svc.create_session(req)
+        session_service = SessionService(db)
+        result = await session_service.create_session(req)
         return ok(result, "会话创建成功")
     except Exception as exc:
         # MySQL 不可用时走内存降级
@@ -38,8 +38,8 @@ async def list_sessions(
 ):
     """获取会话列表（侧边栏用），按最近使用排序"""
     try:
-        svc = SessionService(db)
-        data = await svc.list_sessions(limit=limit)
+        session_service = SessionService(db)
+        data = await session_service.list_sessions(limit=limit)
         # 如果 MySQL 里有数据就用 MySQL 的，否则合并内存里的
         if data:
             return ok(data)
@@ -57,8 +57,8 @@ async def get_session(
     """获取单个会话详情 + 完整消息历史（刷新页面时恢复聊天记录）"""
     # 先查 MySQL（业务元数据 + AIOMySQLSaver 的 messages）
     try:
-        svc = SessionService(db)
-        detail = await svc.get_session_detail(session_id)
+        session_service = SessionService(db)
+        detail = await session_service.get_session_detail(session_id)
         if detail:
             return ok(detail)
     except Exception as exc:
@@ -87,8 +87,8 @@ async def update_session(
     """修改会话名称 或 会话配置"""
     changed = False
     try:
-        svc = SessionService(db)
-        changed = await svc.update_session(session_id, req)
+        session_service = SessionService(db)
+        changed = await session_service.update_session(session_id, req)
     except Exception as exc:
         print(f"[降级] update_session MySQL失败，改内存：{exc}")
     # MySQL 没改成功，查内存
@@ -111,8 +111,8 @@ async def delete_session(
     """删除会话（软删）"""
     ok_ = False
     try:
-        svc = SessionService(db)
-        ok_ = await svc.delete_session(session_id)
+        session_service = SessionService(db)
+        ok_ = await session_service.delete_session(session_id)
     except Exception as exc:
         print(f"[降级] delete_session MySQL失败，删内存：{exc}")
     if not ok_:
@@ -132,10 +132,10 @@ async def reset_session_grid(
     """重置会话的电网状态（清空内存中的电网对象，对话历史保留）"""
     ok_ = False
     try:
-        svc = SessionService(db)
-        ok_ = await svc.reset_grid(session_id)
+        session_service = SessionService(db)
+        ok_ = await session_service.reset_grid(session_id)
     except Exception as exc:
-        print(f"[降级] reset_session MySQL失败，仅清内存：{exc}")
+        print(f"[降级] reset_session_grid MySQL失败，仅清内存：{exc}")
     # 无论如何都清内存中的电网对象
     GraphService.get_instance().reset_grid_session(session_id)
     if session_id in memory_sessions:
