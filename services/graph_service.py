@@ -21,7 +21,6 @@ from .graph_util import (_safe_preview, _sanitize_non_finite, _parse_json_if_pos
 RECURSION_LIMIT = 45
 _SKILL_DONE = object()
 
-
 class GraphService:
 
     _instance: Optional["GraphService"] = None
@@ -85,10 +84,7 @@ class GraphService:
     async def _persist_skill_messages(self, session_id: str,
                                       messages: List[BaseMessage]) -> None:
         """把 skill 旁路产生的消息追加进 checkpoint（官方带外状态写入）。
-
-        skill 旁路跑在编译图外，其消息不进 messages 通道；手动覆写 checkpoint
-        会被图自身更新的 checkpoint 写入遮蔽，导致刷新后丢失。aupdate_state
-        走 add_messages reducer 以子 checkpoint 追加，历史与 HumanMessage 都保留。
+        aupdate_state走 add_messages reducer 以子 checkpoint 追加，历史与 HumanMessage 都保留。
         必须在 astream 结束后调用，避免与图自身的写入竞争。
         """
         if not messages:
