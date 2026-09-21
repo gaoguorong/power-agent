@@ -41,10 +41,9 @@ class SessionService:
         req: SessionCreateRequest,
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """新建会话：MySQL 插一条元数据；若配置了默认电网就顺手创建好"""
-        session_id = uuid.uuid4().hex
         cfg_dict = req.config.model_dump() if req.config else SessionConfig().model_dump()
 
+        session_id = uuid.uuid4().hex
         powerSession = await self.session_repo.create(
             session_id=session_id,
             name=req.name,
@@ -57,7 +56,7 @@ class SessionService:
             try:
                 self._ensure_grid_loaded(session_id, grid_type, load_factor=1.0)
             except Exception:
-                pass  # 预建失败不影响会话，用户提问时 LLM 会自己调 create_test_grid
+                pass
 
         return powerSession.to_summary_dict()
 
@@ -69,12 +68,12 @@ class SessionService:
         user_id: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """会话列表（侧边栏用），按最近使用排序"""
-        powerSessions: List[PowerSession] = await self.session_repo.list_all(user_id=user_id, limit=limit)
-        return [powerSession.to_summary_dict() for powerSession in powerSessions]
+        powerSessions: List[PowerSession] = await self.session_repo.list_all(
+            user_id=user_id, limit=limit
+        )
+        return [ps.to_summary_dict() for ps in powerSessions]
 
     async def get_session_detail(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """单个会话详情 = MySQL 元数据 + 消息历史（刷新页面恢复用）"""
         powerSession = await self.session_repo.get_by_id(session_id)
         if not powerSession:
             return None
@@ -93,16 +92,16 @@ class SessionService:
     # 3. 修改会话
     # ==========================================================
     async def update_session(self, session_id: str, req: SessionUpdateRequest) -> bool:
-        """修改会话：name / config 哪个传了改哪个"""
         changed = False
         if req.name is not None:
             changed = await self.session_repo.update_name(session_id, req.name) or changed
         if req.config is not None:
-            changed = await self.session_repo.update_config(session_id, req.config.model_dump()) or changed
+            changed = await self.session_repo.update_config(
+                session_id, req.config.model_dump()
+            ) or changed
         return changed
 
     async def update_grid_meta_to_db(self, session_id: str) -> None:
-        """每次工具调用完，把内存电网对象的元信息刷到 MySQL（服务重启后靠它恢复）"""
         meta = self.graph_service.get_session_grid_meta(session_id)
         if meta:
             await self.session_repo.update_grid_meta(session_id, meta)
@@ -111,22 +110,21 @@ class SessionService:
         self,
         session_id: str,
         ai_text: str,
-        delta_count: int = 2,  # 一问一答 = 两条消息
+        delta_count: int = 2,
     ) -> None:
-        """聊天结束后更新消息数和最后一条预览"""
-        await self.session_repo.update_last_message(session_id, ai_text, delta_count=delta_count)
+        await self.session_repo.update_last_message(
+            session_id, ai_text, delta_count=delta_count
+        )
 
     # ==========================================================
     # 4. 删除会话 & 重置电网
     # ==========================================================
     async def delete_session(self, session_id: str) -> bool:
-        """删除会话：MySQL 硬删 + 清内存电网对象"""
         ok_ = await self.session_repo.soft_delete(session_id)
         self.graph_service.reset_grid_session(session_id)
         return ok_
 
     async def reset_grid(self, session_id: str) -> bool:
-        """重置会话电网：清内存对象 + 清 MySQL 元数据，对话历史保留"""
         row = await self.session_repo.get_by_id(session_id)
         if not row:
             return False
@@ -138,35 +136,31 @@ class SessionService:
     # 内部：电网对象的懒加载 / 恢复
     # ==========================================================
     async def _restore_grid_if_needed(self, powerSession: PowerSession) -> None:
-        """根据 MySQL 里存的 grid_meta 把电网对象恢复到内存，已有则跳过"""
         sid = powerSession.id
         if self.graph_service.has_grid_session(sid):
             return
         meta = powerSession.get_grid_meta() or {}
         grid_file = meta.get("last_grid_file")
         load_factor = float(meta.get("load_factor") or 1.0)
-        # 优先恢复文件加载的真实电网
         if grid_file:
             try:
                 print(f'尝试从文件恢复电网对象：{grid_file}')
                 self._ensure_grid_loaded_from_file(sid, grid_file, load_factor)
             except Exception:
-                pass  # 恢复失败就算了，用户再问时 LLM 会自己重新加载
+                pass
             return
         grid_type = meta.get("last_grid_type")
         if grid_type and grid_type in _SUPPORTED_GRIDS:
             try:
                 self._ensure_grid_loaded(sid, grid_type, load_factor)
             except Exception:
-                pass  # 恢复失败就算了，用户再问时 LLM 会自己重建
+                pass
 
     @staticmethod
     def _ensure_grid_loaded(session_id: str, grid_type: str, load_factor: float = 1.0) -> None:
-        """创建该会话的电网对象（已存在则跳过），并按需调整负荷倍率"""
         gt_obj = get_grid_tools_obj(session_id)
 
         if getattr(gt_obj, "net", None) is None:
-            # 还没有电网 → 创建，并打上 grid_type 补丁属性（GridTools 自己不记）
             try:
                 result = gt_obj.create_test_grid(grid_type=grid_type)
                 if result and result.get("success"):
@@ -174,18 +168,16 @@ class SessionService:
             except Exception:
                 return
 
-        # 负荷倍率不是 1 才需要缩放
         try:
             factor = float(load_factor or 1.0)
             if abs(factor - 1.0) > 1e-6:
                 gt_obj.set_load_scale(factor=factor)
         except Exception:
-            pass  # 缩放失败不致命，用户下次说"负荷调到X倍"时 LLM 会再调
+            pass
 
     @staticmethod
     def _ensure_grid_loaded_from_file(session_id: str, file_path: str,
                                       load_factor: float = 1.0) -> None:
-        """从文件恢复真实电网对象（已存在则跳过），并按需调整负荷倍率"""
         gt_obj = get_grid_tools_obj(session_id)
 
         if getattr(gt_obj, "net", None) is None:

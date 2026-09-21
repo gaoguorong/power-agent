@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 会话管理接口：会话 CRUD + 电网重置
-带 MySQL 降级：MySQL 挂了就用 services.memory_store 的内存存储
+存储细节（MySQL / 内存降级）全部封装在 SessionService 里，
+本文件只做路由编排和参数校验。
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import get_db_session
-from schemas import SessionConfig, SessionCreateRequest, SessionUpdateRequest, ok
-from services import SessionService, GraphService, memory_sessions
+from schemas import SessionCreateRequest, SessionUpdateRequest, ok
+from services import SessionService
 
 router = APIRouter(prefix="/api/sessions", tags=["会话管理"])
 
@@ -18,17 +19,9 @@ async def create_session(
     req: SessionCreateRequest,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """新建一个会话"""
-    try:
-        session_service = SessionService(db)
-        result = await session_service.create_session(req)
-        return ok(result, "会话创建成功")
-    except Exception as exc:
-        # MySQL 不可用时走内存降级
-        cfg_dict = req.config.model_dump() if req.config else SessionConfig().model_dump()
-        row = memory_sessions.create(req.name, cfg_dict)
-        print(f"[降级] MySQL 不可用，使用内存存储创建会话：{exc}")
-        return ok(row, "会话创建成功（降级模式，重启会丢失）")
+    session_service = SessionService(db)
+    result = await session_service.create_session(req)
+    return ok(result, "会话创建成功")
 
 
 @router.get("")
@@ -36,17 +29,9 @@ async def list_sessions(
     limit: int = 100,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """获取会话列表（侧边栏用），按最近使用排序"""
-    try:
-        session_service = SessionService(db)
-        data = await session_service.list_sessions(limit=limit)
-        # 如果 MySQL 里有数据就用 MySQL 的，否则合并内存里的
-        if data:
-            return ok(data)
-    except Exception as exc:
-        print(f"[降级] MySQL 不可用，读取内存会话列表：{exc}")
-    # 兜底：返回内存中的
-    return ok(memory_sessions.list(limit))
+    session_service = SessionService(db)
+    data = await session_service.list_sessions(limit=limit)
+    return ok(data)
 
 
 @router.get("/{session_id}")
@@ -54,28 +39,11 @@ async def get_session(
     session_id: str,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """获取单个会话详情 + 完整消息历史（刷新页面时恢复聊天记录）"""
-    # 先查 MySQL（业务元数据 + AIOMySQLSaver 的 messages）
-    try:
-        session_service = SessionService(db)
-        detail = await session_service.get_session_detail(session_id)
-        if detail:
-            return ok(detail)
-    except Exception as exc:
-        print(f"[降级] get_session MySQL失败，查内存元数据：{exc}")
-
-    # 降级：只返回内存里的元数据（messages 随 AIOMySQLSaver 已恢复，这里不再额外查）
-    row = memory_sessions.get(session_id)
-    if row is not None:
-        return ok({
-            "id": row["id"],
-            "name": row["name"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "config": row["config"],
-            "messages": [],
-        })
-    raise HTTPException(status_code=404, detail="会话不存在或已删除")
+    session_service = SessionService(db)
+    detail = await session_service.get_session_detail(session_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="会话不存在或已删除")
+    return ok(detail)
 
 
 @router.patch("/{session_id}")
@@ -84,20 +52,8 @@ async def update_session(
     req: SessionUpdateRequest,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """修改会话名称 或 会话配置"""
-    changed = False
-    try:
-        session_service = SessionService(db)
-        changed = await session_service.update_session(session_id, req)
-    except Exception as exc:
-        print(f"[降级] update_session MySQL失败，改内存：{exc}")
-    # MySQL 没改成功，查内存
-    if not changed and session_id in memory_sessions:
-        changed = memory_sessions.update(
-            session_id,
-            name=req.name,
-            config=req.config.model_dump() if req.config else None,
-        )
+    session_service = SessionService(db)
+    changed = await session_service.update_session(session_id, req)
     if not changed:
         raise HTTPException(status_code=404, detail="会话不存在或没有修改内容")
     return ok(None, "会话已更新")
@@ -108,19 +64,10 @@ async def delete_session(
     session_id: str,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """删除会话（软删）"""
-    ok_ = False
-    try:
-        session_service = SessionService(db)
-        ok_ = await session_service.delete_session(session_id)
-    except Exception as exc:
-        print(f"[降级] delete_session MySQL失败，删内存：{exc}")
-    if not ok_:
-        ok_ = memory_sessions.delete(session_id)
+    session_service = SessionService(db)
+    ok_ = await session_service.delete_session(session_id)
     if not ok_:
         raise HTTPException(status_code=404, detail="会话不存在")
-    # 无论如何清 GraphAgent 内存中的电网对象
-    GraphService.get_instance().reset_grid_session(session_id)
     return ok(None, "会话已删除")
 
 
@@ -129,18 +76,8 @@ async def reset_session_grid(
     session_id: str,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """重置会话的电网状态（清空内存中的电网对象，对话历史保留）"""
-    ok_ = False
-    try:
-        session_service = SessionService(db)
-        ok_ = await session_service.reset_grid(session_id)
-    except Exception as exc:
-        print(f"[降级] reset_session_grid MySQL失败，仅清内存：{exc}")
-    # 无论如何都清内存中的电网对象
-    GraphService.get_instance().reset_grid_session(session_id)
-    if session_id in memory_sessions:
-        memory_sessions.clear_preview(session_id)
-        ok_ = True
+    session_service = SessionService(db)
+    ok_ = await session_service.reset_grid(session_id)
     if not ok_:
         raise HTTPException(status_code=404, detail="会话不存在")
     return ok(None, "电网已重置")

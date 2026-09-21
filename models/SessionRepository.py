@@ -4,11 +4,11 @@
 所有DB操作都在这一层，Service 不直接碰 SQLAlchemy
 写操作统一用单条 SQL，避免先 SELECT 再 UPDATE 的两次交互
 """
+import json
 from datetime import datetime
 from typing import List, Optional
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from .PowerSession import PowerSession
 
 
@@ -52,7 +52,7 @@ class SessionRepository:
         config: Optional[dict] = None,
     ) -> PowerSession:
         """新建一个会话记录"""
-        row = PowerSession(
+        powerSession = PowerSession(
             id=session_id,
             name=name or "新会话",
             user_id=user_id or "default",
@@ -60,10 +60,10 @@ class SessionRepository:
             last_message=None,
         )
         if config:
-            row.set_config(config)
-        self.db.add(row)
+            powerSession.set_config(config)
+        self.db.add(powerSession)
         await self.db.flush()
-        return row
+        return powerSession
 
     # ============== 改（全用单条 SQL） ==============
 
@@ -142,5 +142,5 @@ class SessionRepository:
     @staticmethod
     def _dump_json(data: dict) -> str:
         """把 dict 序列化为 JSON 字符串（ensure_ascii=False 保留中文）"""
-        import json
+
         return json.dumps(data, ensure_ascii=False)

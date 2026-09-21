@@ -13,11 +13,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
 class PowerSession(Base):
-    """
-    智能体会话业务元数据表
-    兼容 MySQL 5.1+：不用 JSON 类型、不用 DATETIME DEFAULT CURRENT_TIMESTAMP
-    数据库列名全部大写
-    """
+
     __tablename__ = "POWER_SESSIONS"
 
     # 会话ID：同时作为 LangGraph 的 thread_id 和 SqliteSaver 的 key
@@ -48,8 +44,6 @@ class PowerSession(Base):
         onupdate=datetime.now,
         comment="最后更新时间"
     )
-
-
 
     def get_config(self) -> dict:
         if not self.config_json:
