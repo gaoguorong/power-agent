@@ -3,669 +3,565 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Power Agent 架构图与流程图</title>
+    <title>Power-Agent 架构图与流程图</title>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-                         "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            color: #e0e0e0;
+            font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", sans-serif;
+            background: #f4f6fa;
+            color: #222;
             padding: 40px 20px;
-            min-height: 100vh;
+            line-height: 1.6;
         }
-        .container { max-width: 1400px; margin: 0 auto; }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
         h1 {
             text-align: center;
-            font-size: 2.5em;
+            font-size: 42px;
+            color: #1a3a5c;
             margin-bottom: 10px;
-            background: linear-gradient(90deg, #00d2ff, #3a7bd5, #00d2ff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            font-weight: 700;
         }
         .subtitle {
             text-align: center;
-            color: #888;
+            font-size: 22px;
+            color: #666;
             margin-bottom: 50px;
-            font-size: 1.1em;
         }
         .diagram-section {
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.1);
+            background: #fff;
             border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.08);
             padding: 40px;
-            margin-bottom: 40px;
-            backdrop-filter: blur(10px);
+            margin-bottom: 50px;
         }
-        .diagram-section h2 {
-            font-size: 1.8em;
-            margin-bottom: 10px;
-            color: #00d2ff;
-            border-left: 4px solid #00d2ff;
-            padding-left: 15px;
+        .diagram-title {
+            font-size: 30px;
+            font-weight: 700;
+            color: #1a3a5c;
+            margin-bottom: 8px;
+            border-left: 6px solid #2e86de;
+            padding-left: 16px;
         }
-        .diagram-section .desc {
-            color: #aaa;
+        .diagram-desc {
+            font-size: 18px;
+            color: #555;
             margin-bottom: 30px;
-            font-size: 0.95em;
-            padding-left: 19px;
+            padding-left: 22px;
         }
         .mermaid {
-            background: #fff;
-            border-radius: 12px;
-            padding: 30px;
-            overflow-x: auto;
+            display: flex;
+            justify-content: center;
+        }
+        .mermaid svg {
+            max-width: 100% !important;
+            height: auto !important;
         }
         .legend {
-            background: rgba(0,0,0,0.3);
-            border-radius: 8px;
-            padding: 20px;
-            margin-top: 20px;
-            font-size: 0.9em;
+            background: #eef3fb;
+            border-radius: 10px;
+            padding: 20px 24px;
+            margin-top: 30px;
         }
-        .legend h3 { color: #3a7bd5; margin-bottom: 10px; }
+        .legend h3 {
+            font-size: 22px;
+            color: #1a3a5c;
+            margin-bottom: 12px;
+        }
         .legend-item {
+            font-size: 17px;
+            margin: 8px 0;
             display: flex;
             align-items: center;
-            margin: 5px 0;
-            color: #ccc;
+            gap: 10px;
         }
         .legend-color {
-            width: 20px;
-            height: 20px;
-            border-radius: 4px;
-            margin-right: 10px;
-            flex-shrink: 0;
+            width: 20px; height: 20px; border-radius: 4px;
+            display: inline-block; flex-shrink: 0;
         }
-        .tech-stack {
+        .zoom-controls {
+            position: fixed;
+            right: 30px;
+            bottom: 30px;
             display: flex;
-            flex-wrap: wrap;
             gap: 10px;
-            margin-top: 15px;
+            z-index: 1000;
         }
-        .tech-tag {
-            background: linear-gradient(135deg, #3a7bd5, #00d2ff);
-            color: #fff;
-            padding: 6px 14px;
-            border-radius: 20px;
-            font-size: 0.85em;
-            font-weight: 500;
+        .zoom-btn {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            border: none;
+            background: #2e86de;
+            color: white;
+            font-size: 28px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(46,134,222,0.4);
+            transition: transform 0.2s;
         }
-        table.feature-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
+        .zoom-btn:hover { transform: scale(1.1); }
+        .zoom-btn.reset { background: #555; font-size: 18px; }
+        .tip {
+            background: #fff7e6;
+            border: 2px solid #ffcc80;
+            border-radius: 10px;
+            padding: 16px 20px;
+            font-size: 16px;
+            color: #8a5a00;
+            margin-bottom: 30px;
         }
-        table.feature-table th,
-        table.feature-table td {
-            border: 1px solid rgba(255,255,255,0.15);
-            padding: 12px 16px;
-            text-align: left;
-        }
-        table.feature-table th {
-            background: rgba(58, 123, 213, 0.3);
-            color: #00d2ff;
-            font-weight: 600;
-        }
-        table.feature-table tr:hover {
-            background: rgba(255,255,255,0.05);
-        }
+        .tip strong { color: #c47c00; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>⚡ Power Agent 电网分析智能体</h1>
-        <p class="subtitle">架构图 · 流程图 · 技术全景</p>
 
-        <!-- ==================== 1. 系统架构图 ==================== -->
-        <div class="diagram-section">
-            <h2>一、系统总体架构图</h2>
-            <p class="desc">前后端分离架构，后端基于 FastAPI + LangGraph，前端 Vue 3 单页应用，MySQL + LangGraph Checkpointer 持久化</p>
-            <div class="mermaid">
+<div class="container">
+    <h1>⚡ Power-Agent 系统架构与流程图</h1>
+    <p class="subtitle">LangGraph + Pandapower 电网静态安全分析智能体</p>
+
+    <div class="tip">
+        💡 <strong>查看提示：</strong>点击右下角 + / - 按钮缩放图表，或直接在浏览器中按 Ctrl+滚轮 放大查看细节。
+    </div>
+
+    <!-- ============ 架构图 ============ -->
+    <div class="diagram-section">
+        <div class="diagram-title">一、系统总体分层架构图</div>
+        <div class="diagram-desc">从上到下展示前后端、API 层、业务服务、Agent、工具、数据各层的依赖关系与数据流向</div>
+
+        <div class="mermaid">
 graph TB
-    subgraph 用户层
-        U[👤 用户/浏览器]
+    subgraph UI["🖥️ 前端展示层 (Vue 3 + Element Plus)"]
+        direction LR
+        SPA["<b>SPA 单页应用</b><br/>Chat 界面 / 会话管理 / 配置"]
+        style SPA fill:#e3f2fd,stroke:#1565c0,stroke-width:3px
     end
 
-    subgraph 前端层 Vue3 + Element Plus
-        FE[Power Agent SPA]
-        FE_Components[会话管理 / 聊天界面 / 可视化图表]
-        FE --> FE_Components
-    end
-
-    subgraph 后端 API 层 FastAPI
+    subgraph API["🌐 API 接入层 (FastAPI)"]
         direction TB
-        API[REST API + SSE]
-        CORS[CORS 中间件]
-        Router[路由控制器]
-        API --> CORS --> Router
+        Router["<b>路由注册</b><br/>register_routers()"]
+        
+        subgraph Ctrl["Controllers（路由编排层）"]
+            direction LR
+            CC["<b>chat_controller</b><br/>SSE 流式聊天"]
+            SC["<b>session_controller</b><br/>会话 CRUD"]
+            FC["<b>config_controller</b><br/>前端配置"]
+        end
+        
+        Router --> Ctrl
     end
 
-    subgraph 业务服务层
+    subgraph SVC["⚙️ 业务服务层 (Services)"]
         direction TB
-        GraphSvc[GraphService 单例]
-        SessionSvc[SessionService 会话业务]
-        SkillEngine[Skill 执行引擎]
-        MemStore[内存降级存储]
+        GS["<b>GraphService</b><br/>单例 · 驱动 LangGraph<br/>SSE 事件流转 / 工具执行"]
+        SS["<b>SessionService</b><br/>会话业务 · MySQL CRUD<br/>电网对象懒加载/恢复"]
     end
 
-    subgraph Agent 核心层 LangGraph 状态机
+    subgraph AGENT["🤖 Agent 层 (LangGraph)"]
         direction TB
-        GA[GraphAgent]
-        AgentNode[agent 节点]
-        InjectNode[inject_session 节点]
-        ToolsNode[tools 节点]
-        SkillNode[skill_check 节点]
-        GA --> AgentNode --> InjectNode --> ToolsNode --> SkillNode
-        SkillNode -->|有 Skill 命中| AgentNode
-        SkillNode -->|无 Skill 命中| END((结束))
+        GA["<b>GraphAgent</b><br/>状态机定义与编译"]
+        State["<b>AgentState</b><br/>TypedDict<br/>messages / session_id / question / matched_skill"]
+        LLM["<b>llm_client</b><br/>ChatOpenAI 工厂<br/>阿里云百炼 / Ollama 本地"]
     end
 
-    subgraph 工具层 Tools 17个原子工具
+    subgraph TOOLS["🔧 工具层"]
         direction TB
-        GridTools[GridTools 电网分析类]
-        LC_Tools[LangChain @tool 薄壳]
-        SkillDef[Skill 声明定义]
-        LC_Tools --> GridTools
-        SkillDef --> SkillEngine
+        subgraph LC["LangChain @tool 薄壳 (17个原子工具)"]
+            LT["create_test_grid<br/>load_grid_from_file<br/>run_ac_power_flow<br/>run_n1_security_check<br/>get_line_overload_summary<br/>get_voltage_violation_summary<br/>..."]
+        end
+        subgraph GT["GridTools (pandapower 封装)"]
+            Grid["潮流 / N-1 / 过载<br/>电压越限 / 损耗<br/>灵敏度 / 再调度"]
+        end
+        LC --> GT
     end
 
-    subgraph 数据层
+    subgraph SKILL["🎯 Skill 技能层 (声明式编排)"]
         direction TB
-        MySQL[(MySQL 8.0)]
-        Checkpointer[LangGraph AIOMySQLSaver]
-        GridObj[_sessions 字典<br/>会话隔离的 GridTools 实例]
-        Knowledge[知识库 KNOWLEDGE_BASE]
+        SD["<b>skill_def.py</b><br/>OVERLOAD_RELIEF_SKILL<br/>（断线后消过载闭环）"]
+        SR["<b>skill_runner.py</b><br/>执行引擎 · 确定性 steps<br/>generator 驱动"]
     end
 
-    subgraph 外部依赖
-        LLM[LLM API<br/>阿里云百炼 / Ollama]
-        Pandapower[pandapower<br/>电力系统计算库]
-        GridData[实际电网数据<br/>.json / .p / .xlsx]
-        MCP[MCP 独立服务<br/>端口 9000]
+    subgraph EXEC["📦 执行器层"]
+        direction LR
+        REG["<b>ToolRegistry</b><br/>工具户口本"]
+        PY["<b>PythonFunction</b><br/>Adapter"]
+        CL["<b>CommandLine</b><br/>Adapter"]
     end
 
-    U --> FE
-    FE -->|HTTP + SSE| API
-    Router --> GraphSvc
-    Router --> SessionSvc
-    GraphSvc --> GA
-    GraphSvc --> SkillEngine
-    SessionSvc --> MemStore
-    GraphSvc -->|异步调用| AgentNode
-    AgentNode -->|Function Calling| LLM
-    InjectNode -->|注入 session_id| ToolsNode
-    ToolsNode --> LC_Tools
-    SkillEngine --> SkillDef
-    LC_Tools --> GridTools
-    GridTools --> Pandapower
-    GridTools --> GridData
-    SkillNode --> SkillEngine
-    GA --> Checkpointer
-    Checkpointer --> MySQL
-    SessionSvc --> MySQL
-    GridTools --> GridObj
-    AgentNode --> Knowledge
-    MCP -->|工具暴露| GridTools
+    subgraph DATA["💾 数据层"]
+        direction LR
+        MYSQL[("MySQL 8.0<br/>PowerSession 表<br/>· name / config<br/>· grid_meta<br/>· last_message")]
+        AIO[("AIOMySQLSaver<br/>LangGraph Checkpoint<br/>消息历史持久化<br/>thread_id = session_id")]
+        MEM["内存对象<br/>_sessions: Dict<br/>session_id → GridTools"]
+    end
 
-    style 用户层 fill:#667eea,stroke:#764ba2,color:#fff
-    style 前端层 fill:#f093fb,stroke:#f5576c,color:#333
-    style 后端_API层 fill:#4facfe,stroke:#00f2fe,color:#fff
-    style 业务服务层 fill:#43e97b,stroke:#38f9d7,color:#333
-    style Agent_核心层 fill:#fa709a,stroke:#fee140,color:#333
-    style 工具层 fill:#a18cd1,stroke:#fbc2eb,color:#333
-    style 数据层 fill:#84fab0,stroke:#8fd3f4,color:#333
-    style 外部依赖 fill:#d299c2,stroke:#fef9d7,color:#333
-            </div>
+    subgraph CFG["⚙️ 配置层"]
+        direction TB
+        MC["<b>model_config.py</b><br/>LLM 配置 / System Prompt<br/>知识库 / 电网类型列表"]
+        MY["<b>mysql_config.py</b><br/>DATABASE_CONFIG"]
+        AO["<b>app_options.py</b><br/>前端可配置项"]
+    end
+
+    %% 连接关系
+    SPA -- "HTTP + SSE" --> API
+    API -- "调用" --> SVC
+    GS -- "驱动" --> AGENT
+    AGENT -- "LLM Function Calling" --> TOOLS
+    GS -- "Skill 拦截/旁路" --> SKILL
+    SKILL -- "内部调" --> GT
+    GS -- "注册/兜底" --> EXEC
+    SVC -- "读写" --> DATA
+    GS -- "Checkpoint" --> AIO
+    TOOLS -- "pandapower计算" --> GT
+    
+    CFG -.-> AGENT
+    CFG -.-> DATA
+    
+    style UI fill:#e3f2fd,stroke:#1565c0,stroke-width:3px
+    style API fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px
+    style SVC fill:#fff3e0,stroke:#ef6c00,stroke-width:3px
+    style AGENT fill:#fce4ec,stroke:#c2185b,stroke-width:3px
+    style TOOLS fill:#f3e5f5,stroke:#7b1fa2,stroke-width:3px
+    style SKILL fill:#e0f7fa,stroke:#00838f,stroke-width:3px
+    style EXEC fill:#fff8e1,stroke:#f57f17,stroke-width:3px
+    style DATA fill:#ede7f6,stroke:#4527a0,stroke-width:3px
+    style CFG fill:#efebe9,stroke:#5d4037,stroke-width:3px
+        </div>
+    </div>
+
+    <!-- ============ LangGraph 状态机图 ============ -->
+    <div class="diagram-section">
+        <div class="diagram-title">二、LangGraph 状态机结构图</div>
+        <div class="diagram-desc">GraphAgent 编译后的 StateGraph 拓扑，包含条件分支与 Skill 旁路</div>
+
+        <div class="mermaid">
+graph TB
+    START([START]) --> AGENT["<b>agent</b><br/>调用 LLM + tools<br/>（注入 System Prompt）"]
+
+    AGENT --> DECIDE{"LLM 输出<br/>是否包含 tool_calls?"}
+
+    DECIDE -- "是（Function Calling）" --> INJECT["<b>inject_session</b><br/>给 tool_calls.args<br/>注入 session_id"]
+
+    INJECT --> TOOLS["<b>tools</b><br/>批量执行工具<br/>→ ToolMessage[]"]
+
+    TOOLS --> SKILL_CHECK["<b>skill_check</b><br/>后置匹配 Skill<br/>（match_skill_after_llm）"]
+
+    SKILL_CHECK --> ROUTE{"是否命中<br/>matched_skill?"}
+
+    ROUTE -- "否" --> AGENT
+    ROUTE -- "是（触发 Skill 旁路）" --> SKILL["<b>Skill 旁路</b><br/>run_overload_relief()<br/>发电机灵敏度再调度<br/>（确定性闭环）"]
+
+    SKILL --> END_SKILL([END])
+
+    DECIDE -- "否（直接回答）" --> FINAL_CHECK{"LLM 直接回答后<br/>后置检查 Skill?"}
+    FINAL_CHECK -- "命中 Skill" --> SKILL
+    FINAL_CHECK -- "不命中" --> END([END])
+
+    style START fill:#c8e6c9,stroke:#2e7d32,stroke-width:3px
+    style END fill:#ffcdd2,stroke:#c62828,stroke-width:3px
+    style END_SKILL fill:#ffcdd2,stroke:#c62828,stroke-width:3px
+    style AGENT fill:#f8bbd0,stroke:#c2185b,stroke-width:3px
+    style INJECT fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style TOOLS fill:#f3e5f5,stroke:#7b1fa2,stroke-width:3px
+    style SKILL_CHECK fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style SKILL fill:#b2ebf2,stroke:#006064,stroke-width:4px
+    style DECIDE fill:#fff9c4,stroke:#f9a825,stroke-width:3px
+    style ROUTE fill:#fff9c4,stroke:#f9a825,stroke-width:3px
+    style FINAL_CHECK fill:#fff9c4,stroke:#f9a825,stroke-width:3px
         </div>
 
-        <!-- ==================== 2. LangGraph 状态机流程图 ==================== -->
-        <div class="diagram-section">
-            <h2>二、LangGraph Agent 状态机流程图</h2>
-            <p class="desc">核心 Agent 循环：LLM 决策 → 注入会话ID → 执行工具 → Skill 后置检查 → 回到 LLM 或结束</p>
-            <div class="mermaid">
-flowchart TD
-    START([🚀 START]) --> Agent
-    
-    subgraph Agent循环
-        Agent["🤖 agent 节点<br/>LLM + bind_tools<br/>输入: [system_prompt] + messages"]
-        Decision{"LLM 输出有<br/>tool_calls?"}
-        Agent --> Decision
-        
-        Decision -->|YES 有工具调用| Inject
-        Decision -->|NO 直接回答| EndSkillCheck
-        
-        Inject["💉 inject_session 节点<br/>把 thread_id 注入<br/>每个 tool_call 的 args"]
-        Inject --> Tools
-        
-        Tools["🔧 tools 节点<br/>遍历 tool_calls<br/>invoke 对应 @tool"]
-        Tools --> SkillCheck
-        
-        SkillCheck["🎯 skill_check 节点<br/>后置触发检查<br/>当前电网是否<br/>匹配 Skill 条件?"]
-        SkillCheck -->|有 Skill 匹配| SkillRun["⚡ 执行 Skill 快速通道<br/>(overload_relief)"]
-        SkillCheck -->|无 Skill| Agent
-        
-        SkillRun --> Agent
-    end
-    
-    EndSkillCheck{"LLM 直接输出文本<br/>(非 tool_calls)"}
-    EndSkillCheck --> FinalSkill{"后置 Skill 检查<br/>断线后消过载?"}
-    FinalSkillCheck -->|YES| SkillRun
-    FinalSkillCheck -->|NO| DONE([✅ DONE])
-
-    style START fill:#2ecc71,stroke:#27ae60,color:#fff
-    style DONE fill:#e74c3c,stroke:#c0392b,color:#fff
-    style Agent fill:#3498db,stroke:#2980b9,color:#fff
-    style Inject fill:#9b59b6,stroke:#8e44ad,color:#fff
-    style Tools fill:#f39c12,stroke:#e67e22,color:#333
-    style SkillCheck fill:#1abc9c,stroke:#16a085,color:#fff
-    style SkillRun fill:#e67e22,stroke:#d35400,color:#fff
-            </div>
+        <div class="legend">
+            <h3>📋 节点说明</h3>
+            <div class="legend-item"><span class="legend-color" style="background:#f8bbd0"></span><b>agent</b> — 调用 LLM（绑定 17 个 @tool），是整个状态机的核心驱动节点</div>
+            <div class="legend-item"><span class="legend-color" style="background:#fff3e0"></span><b>inject_session</b> — 工具执行前给每个 tool_call.args 注入 session_id，实现多会话隔离</div>
+            <div class="legend-item"><span class="legend-color" style="background:#f3e5f5"></span><b>tools</b> — 批量执行 LLM 决定调用的工具，由 GraphService._tools_node 实现</div>
+            <div class="legend-item"><span class="legend-color" style="background:#e0f7fa"></span><b>skill_check</b> — 工具执行后检查是否需要触发 Skill 旁路（如断线后自动消过载）</div>
+            <div class="legend-item"><span class="legend-color" style="background:#b2ebf2"></span><b>Skill 旁路</b> — 声明式 steps 驱动的确定性闭环，不走 LLM，过程完全可审计</div>
+            <div class="legend-item"><span class="legend-color" style="background:#fff9c4"></span><b>菱形判断</b> — 条件边，决定走哪条路径</div>
         </div>
+    </div>
 
-        <!-- ==================== 3. 聊天请求处理全链路 ==================== -->
-        <div class="diagram-section">
-            <h2>三、聊天请求处理全链路（SSE 流式）</h2>
-            <p class="desc">从用户提问到 SSE 事件推流的完整链路，包含 MySQL 降级和 Skill 快速通道</p>
-            <div class="mermaid">
+    <!-- ============ 完整请求流程 ============ -->
+    <div class="diagram-section">
+        <div class="diagram-title">三、完整请求处理流程（时序图）</div>
+        <div class="diagram-desc">用户发起聊天请求到收到完整回复的全链路时序，覆盖 SSE 事件、Skill 拦截、工具调用与持久化</div>
+
+        <div class="mermaid">
 sequenceDiagram
     participant User as 👤 用户
-    participant FE as 🎨 前端 Vue3
-    participant API as 🔌 FastAPI
-    participant SSE as 📡 chat_controller
-    participant GS as ⚙️ GraphService
-    participant Skill as 🎯 Skill引擎
-    participant GA as 🤖 GraphAgent
-    participant LLM as 🧠 LLM API
-    participant Tools as 🔧 Tools层
-    participant DB as 💾 MySQL
-    participant CK as 🗂️ Checkpointer
+    participant FE as 🖥️ 前端 SPA
+    participant CC as chat_controller
+    participant GS as GraphService
+    participant Skill as Skill 引擎
+    participant GA as GraphAgent
+    participant LLM as 🤖 LLM
+    participant Tools as 🔧 pandapower
+    participant MySQL as 💾 MySQL
 
-    User->>FE: 输入问题
-    FE->>API: POST /api/sessions/{id}/chat/stream
-    API->>DB: 查询 session 是否存在
-    alt MySQL 可用
-        DB-->>API: 返回 session 元数据
-    else MySQL 挂了
-        API->>API: 降级到内存存储
-    end
-    API->>API: 恢复电网对象
-    API-->>FE: 返回 SSE 连接 (EventSourceResponse)
+    User->>FE: 输入问题（如"30节点潮流+过载分析"）
+    FE->>CC: POST /api/sessions/{id}/chat/stream (SSE)
+    CC->>MySQL: 查询 session 是否存在
+    MySQL-->>CC: 返回 session / 降级到内存
     
-    Note over FE,API: SSE 事件推送开始
-    GS->>GS: ensure_init() 预热 Agent
+    CC->>GS: chat_stream(session_id, question)
+    GS->>GS: ensure_init() · 预热 GraphAgent
     
-    GS->>Skill: match_skill(question)
-    alt 前置 Skill 命中
-        Skill-->>GS: 返回 skill_def
-        GS->>Skill: _run_skill_channel()
-        loop Skill 执行步骤
-            Skill->>Tools: 调用电网工具
-            Tools-->>Skill: 返回结果
-            GS-->>FE: event=tool_start
-            GS-->>FE: event=tool_end
-        end
-        GS->>CK: checkpoint_put 手动写入
-        GS-->>FE: event=token (最终文本)
-        GS-->>FE: event=done
-    else 走 LLM 正常流程
-        GS->>GA: astream(state, config)
-        loop 每轮 Agent 循环
-            GA->>LLM: 发送 messages (含历史)
-            LLM-->>GA: AIMessage (text + tool_calls)
-            
-            alt LLM 返回 tool_calls
-                GA-->>GS: 更新 messages
-                GS-->>FE: event=tool_start (每个工具)
-                GS->>Tools: _execute_tools()
-                Tools-->>GS: ToolMessage 列表
-                GS-->>FE: event=tool_end
-            else LLM 返回最终文本
-                GS-->>FE: event=token (打字机输出)
-                GS->>Skill: match_skill_after_llm()
-                alt 后置 Skill 命中
-                    Skill-->>GS: 返回 skill_def
-                    GS->>Skill: _run_skill_channel()
-                    GS-->>FE: event=done
-                else 纯文本回答
-                    GS-->>FE: event=done
+    GS-->>FE: 📡 SSE: event=welcome
+    
+    rect rgb(230, 245, 255)
+        Note over GS,Skill: 🔍 Skill 前置拦截检查
+        GS->>Skill: match_skill(question)
+        alt 命中 Skill（如"断线消除过载"复合意图）
+            Skill-->>GS: 返回 skill 定义
+            GS->>Skill: run_overload_relief(gt, skill)
+            Skill-->>GS: yield tool/final 事件流
+            GS-->>FE: 📡 SSE: tool_start / tool_end × N
+            GS-->>FE: 📡 SSE: token + done
+        else 不命中 → 走 LangGraph 正常流程
+            GS->>GA: compiled.astream(state, stream_mode=updates)
+            rect rgb(255, 240, 245)
+                Note over GA,LLM: 🔄 Graph 循环：agent → tools → skill_check → agent
+                GA->>LLM: invoke(messages + SystemPrompt)
+                LLM-->>GA: AIMessage（含 tool_calls 或直接回答）
+                
+                alt LLM 输出 tool_calls
+                    GA->>Tools: 批量执行 17 个原子工具之一
+                    Tools-->>GA: ToolMessage（含 pandapower 计算结果）
+                    GA-->>GS: yield node="tools" update
+                    GS-->>FE: 📡 SSE: tool_start / tool_end
+                    GS->>Skill: skill_check 后置匹配
+                    alt 后置命中 Skill
+                        GS->>Skill: run_overload_relief()
+                        Skill-->>FE: 📡 SSE: tool_start/end + token + done
+                    else 继续循环
+                        GA->>LLM: 再调 LLM（工具结果作为上下文）
+                    end
+                else LLM 直接输出最终回答
+                    GA-->>GS: yield node="agent" 最终文本
+                    GS-->>FE: 📡 SSE: token（打字机效果）
                 end
             end
         end
     end
     
-    GS->>DB: update_grid_meta_to_db()
-    GS->>DB: update_last_message()
-    CK->>DB: checkpoint 自动持久化
-    GS-->>FE: SSE 连接关闭
-    FE-->>User: 渲染最终结果 + 工具调用时间线
-            </div>
+    GS-->>FE: 📡 SSE: event=done
+    CC->>MySQL: 更新 last_message / grid_meta / message_count
+    GS->>MySQL: AIOMySQLSaver.checkpoint（消息历史自动持久化）
+    FE->>User: 渲染完整对话 + 工具调用过程
         </div>
-
-        <!-- ==================== 4. Skill 快速通道流程图 ==================== -->
-        <div class="diagram-section">
-            <h2>四、Skill 声明式快速通道执行流程</h2>
-            <p class="desc">以 overload_relief（断线后消过载）为例，展示声明式 steps → 执行器解释执行的闭环</p>
-            <div class="mermaid">
-flowchart TD
-    START([Skill 入口<br/>match_skill 命中]) --> CHECK_NET{电网<br/>已加载?}
-    CHECK_NET -->|NO| ABORT([❌ 终止<br/>交回上层走 LLM])
-    CHECK_NET -->|YES| STEPS
-
-    subgraph steps 声明式执行器
-        direction TB
-        STEPS["steps 解释器循环<br/>step = skill_def.steps[i]"]
-        
-        STEPS --> T1{"action == tool?"}
-        T1 -->|YES| TOOL["执行 tool 步骤<br/>调用 GridTools 方法<br/>结果存入 ctx.saved[save]"]
-        TOOL --> YIELD_TOOL["yield<br/>{kind:tool, name, input, output}"]
-        YIELD_TOOL --> STEPS
-        
-        T1 -->|NO| T2{"action == check?"}
-        T2 -->|YES| CHECK_FN["执行 check 谓词<br/>_check_overload_free<br/>_check_relief_finished"]
-        CHECK_FN --> BRANCH{"cond = True?"}
-        BRANCH -->|YES 走 then| THEN["then 分支"]
-        BRANCH -->|NO 走 else| ELSE["else 分支"]
-        
-        THEN --> THEN_ACTION{"分支动作?"}
-        THEN_ACTION -->|end| FINAL_CHECK
-        THEN_ACTION -->|step_fn| STEP_FN["执行 step_fn<br/>_fn_relief_round<br/>(单轮再调度核心)"]
-        STEP_FN --> STEPS
-        THEN_ACTION -->|loop| STEPS
-        
-        ELSE --> ELSE_ACTION{"分支动作?"}
-        ELSE_ACTION -->|end| FINAL_CHECK
-        ELSE_ACTION -->|step_fn| STEP_FN
-        ELSE_ACTION -->|loop| STEPS
-        
-        T2 -->|NO| FINAL_CHECK
-    end
-
-    FINAL_CHECK{ctx.final<br/>有结论?}
-    FINAL_CHECK -->|YES| YIELD_FINAL["yield<br/>{kind:final, success, text}"]
-    FINAL_CHECK -->|NO| LOOP_BUDGET{"步数预算<br/>耗尽?"}
-    LOOP_BUDGET -->|YES| YIELD_FINAL
-    LOOP_BUDGET -->|NO| STEPS
-
-    YIELD_FINAL --> END([Skill 完成])
-
-    style START fill:#2ecc71,stroke:#27ae60,color:#fff
-    style END fill:#e74c3c,stroke:#c0392b,color:#fff
-    style ABORT fill:#95a5a6,stroke:#7f8c8d,color:#fff
-    style TOOL fill:#f39c12,stroke:#e67e22,color:#333
-    style STEP_FN fill:#e67e22,stroke:#d35400,color:#fff
-    style CHECK_FN fill:#3498db,stroke:#2980b9,color:#fff
-            </div>
-        </div>
-
-        <!-- ==================== 5. 数据库与存储架构 ==================== -->
-        <div class="diagram-section">
-            <h2>五、数据存储架构（双库协同）</h2>
-            <p class="desc">MySQL 存业务元数据 + LangGraph AIOMySQLSaver 存对话消息历史，两者通过 thread_id 关联</p>
-            <div class="mermaid">
-erDiagram
-    POWER_SESSIONS ||--o{ CHECKPOINT_MESSAGES : "thread_id 关联"
-    POWER_SESSIONS {
-        string ID PK "会话ID = LangGraph thread_id"
-        string NAME "会话名称"
-        string USER_ID "用户ID (预留)"
-        text CONFIG_JSON "会话配置 JSON"
-        text GRID_META_JSON "电网恢复元信息"
-        string LAST_MESSAGE "最后消息预览"
-        int MESSAGE_COUNT "消息总数"
-        datetime CREATED_AT "创建时间"
-        datetime UPDATED_AT "更新时间"
-        datetime DELETED_AT "软删时间"
-    }
-
-    CHECKPOINT_MESSAGES ||--o| CHECKPOINT_BLOBS : "checkpoint_id"
-    CHECKPOINT_MESSAGES {
-        string THREAD_ID "关联 POWER_SESSIONS.ID"
-        string CHECKPOINT_ID "检查点ID"
-        text MESSAGE_DATA "LangGraph 消息历史"
-    }
-
-    CHECKPOINT_BLOBS {
-        string CHECKPOINT_ID PK "检查点ID"
-        blob CHECKPOINT "完整 checkpoint 状态"
-        blob METADATA "执行元数据"
-    }
-
-    SESSION_GRID_OBJ ||--o| POWER_SESSIONS : "恢复"
-    SESSION_GRID_OBJ {
-        string SESSION_ID "会话ID"
-        object GRID_TOOLS "GridTools 实例"
-        object NET "pandapowerNet 对象"
-        float LOAD_FACTOR "负荷倍率"
-        string SOURCE_FILE "模型来源文件"
-    }
-
-    MEMORY_FALLBACK ||--o| POWER_SESSIONS : "降级替代"
-    MEMORY_FALLBACK {
-        string SESSION_ID "会话ID"
-        string NAME "会话名称"
-        object CONFIG "会话配置"
-        datetime CREATED_AT "创建时间"
-        string LAST_MESSAGE "消息预览"
-    }
-
-    style POWER_SESSIONS fill:#3498db,stroke:#2980b9,color:#fff
-    style CHECKPOINT_MESSAGES fill:#9b59b6,stroke:#8e44ad,color:#fff
-    style CHECKPOINT_BLOBS fill:#8e44ad,stroke:#7d3c98,color:#fff
-    style SESSION_GRID_OBJ fill:#f39c12,stroke:#e67e22,color:#333
-    style MEMORY_FALLBACK fill:#95a5a6,stroke:#7f8c8d,color:#fff
-            </div>
-        </div>
-
-        <!-- ==================== 6. 技术架构分层图 ==================== -->
-        <div class="diagram-section">
-            <h2>六、分层架构与模块依赖</h2>
-            <p class="desc">MVC 风格的清晰分层，每层只依赖下层，上层对外暴露接口</p>
-            <div class="mermaid">
-graph LR
-    subgraph "表现层"
-        FE[Vue 3 SPA]
-        SSE[SSE 实时推送]
-    end
-
-    subgraph "Controller 层"
-        CC[chat_controller]
-        SC[session_controller]
-        FC[frontend_controller]
-        CFG_C[config_controller]
-    end
-
-    subgraph "Schema 层 DTO"
-        SCHEMA[Pydantic Models<br/>ChatRequest / SessionConfig / ...]
-    end
-
-    subgraph "Service 层 业务编排"
-        GS[GraphService<br/>单例, 核心驱动]
-        SS[SessionService<br/>CRUD + 电网恢复]
-        MS[memory_store<br/>降级存储]
-    end
-
-    subgraph "Agent 层 LangGraph 状态机"
-        GA[GraphAgent<br/>StateGraph 定义]
-        AS[AgentState<br/>TypedDict]
-        LC[llm_client<br/>ChatOpenAI 工厂]
-    end
-
-    subgraph "Skill 层 声明式快速通道"
-        SD[skill_def.py<br/>OVERLOAD_RELIEF]
-        SR[skill_runner.py<br/>执行器 + 上下文]
-    end
-
-    subgraph "Tool 层 原子工具"
-        GT[GridTools<br/>pandapower 封装]
-        LCT[langchain_tool.py<br/>@tool 薄壳 x17]
-    end
-
-    subgraph "Model 层 数据访问"
-        DB[(MySQL)]
-        PS[PowerSession ORM]
-        SR2[SessionRepository]
-        CK[AIOMySQLSaver]
-    end
-
-    subgraph "Config 层 配置"
-        MC[model_config.py]
-        MISC[mysql_config.py<br/>app_options.py]
-    end
-
-    FE --> CC
-    FE --> SC
-    SSE --> CC
-    CC --> SCHEMA
-    SC --> SCHEMA
-    CC --> GS
-    SC --> SS
-    SS --> MS
-    GS --> GA
-    GS --> SR
-    GA --> AS
-    GA --> LC
-    GA --> LCT
-    SR --> SD
-    SR --> GT
-    LCT --> GT
-    GS --> CK
-    SS --> SR2
-    SR2 --> PS
-    PS --> DB
-    CK --> DB
-    LCT --> MC
-    LC --> MC
-    MC --> MISC
-
-    style 表现层 fill:#667eea,stroke:#764ba2,color:#fff
-    style Controller_层 fill:#4facfe,stroke:#00f2fe,color:#333
-    style Schema_层 fill:#43e97b,stroke:#38f9d7,color:#333
-    style Service_层 fill:#f39c12,stroke:#e67e22,color:#333
-    style Agent_层 fill:#fa709a,stroke:#fee140,color:#333
-    style Skill_层 fill:#e67e22,stroke:#d35400,color:#fff
-    style Tool_层 fill:#9b59b6,stroke:#8e44ad,color:#fff
-    style Model_层 fill:#3498db,stroke:#2980b9,color:#fff
-    style Config_层 fill:#95a5a6,stroke:#7f8c8d,color:#fff
-            </div>
-        </div>
-
-        <!-- ==================== 7. 核心功能清单 ==================== -->
-        <div class="diagram-section">
-            <h2>七、核心功能与原子工具清单</h2>
-            <p class="desc">17 个原子工具 + 2 个 Skill 快速通道，覆盖电网建模 → 潮流计算 → 安全分析 → 再调度全流程</p>
-            <div class="mermaid">
-graph TB
-    subgraph "🏗️ 电网建模"
-        A1[create_test_grid<br/>内置算例 case9-300]
-        A2[load_grid_from_file<br/>真实电网文件加载]
-    end
-    
-    subgraph "⚡ 潮流计算"
-        B1[run_ac_power_flow<br/>交流潮流 多种算法]
-        B2[reset_grid_session<br/>重置会话状态]
-    end
-    
-    subgraph "🔍 安全分析"
-        C1[run_n1_security_check<br/>N-1 元件开断校核]
-        C2[analyze_with_outage<br/>假想工况分析]
-        C3[set_element_status<br/>真实投运状态修改]
-        C4[set_load_scale<br/>负荷倍率缩放]
-    end
-    
-    subgraph "📊 结果分析"
-        D1[get_line_overload_summary<br/>线路过载分析]
-        D2[get_voltage_violation_summary<br/>电压越限分析]
-        D3[calculate_loss_analysis<br/>网损计算]
-        D4[generate_risk_report<br/>综合风险报告]
-    end
-    
-    subgraph "🔧 拓扑与知识"
-        E1[list_grid_elements<br/>元件清单查询]
-        E2[get_grid_topology<br/>拓扑结构]
-        E3[query_knowledge<br/>规程/定义查询]
-    end
-    
-    subgraph "🎯 再调度"
-        F1[calc_gen_sensitivity<br/>机组灵敏度计算]
-        F2[adjust_gen_output<br/>机组出力调整]
-    end
-
-    subgraph "⚡ Skill 快速通道"
-        SG[overload_relief<br/>断线后消过载<br/>机组灵敏度再调度闭环]
-    end
-
-    SG --> F1
-    SG --> F2
-    SG --> C1
-
-    style 电网建模 fill:#3498db,stroke:#2980b9,color:#fff
-    style 潮流计算 fill:#2ecc71,stroke:#27ae60,color:#fff
-    style 安全分析 fill:#f39c12,stroke:#e67e22,color:#333
-    style 结果分析 fill:#9b59b6,stroke:#8e44ad,color:#fff
-    style 拓扑与知识 fill:#1abc9c,stroke:#16a085,color:#fff
-    style 再调度 fill:#e74c3c,stroke:#c0392b,color:#fff
-    style Skill_快速通道 fill:#e67e22,stroke:#d35400,color:#fff
-            </div>
-        </div>
-
-        <!-- ==================== 8. 技术栈总览 ==================== -->
-        <div class="diagram-section">
-            <h2>八、技术栈全景</h2>
-            <p class="desc">前后端分离、Python 技术栈、LLM + Agent 架构</p>
-            
-            <div class="tech-stack">
-                <span class="tech-tag">FastAPI</span>
-                <span class="tech-tag">LangGraph</span>
-                <span class="tech-tag">LangChain</span>
-                <span class="tech-tag">SQLAlchemy</span>
-                <span class="tech-tag">aiomysql</span>
-                <span class="tech-tag">Pydantic</span>
-                <span class="tech-tag">sse-starlette</span>
-                <span class="tech-tag">pandapower</span>
-                <span class="tech-tag">numpy</span>
-                <span class="tech-tag">Vue 3</span>
-                <span class="tech-tag">Element Plus</span>
-                <span class="tech-tag">Pinia</span>
-                <span class="tech-tag">ECharts</span>
-                <span class="tech-tag">Vite</span>
-                <span class="tech-tag">TypeScript</span>
-                <span class="tech-tag">MySQL 8.0</span>
-                <span class="tech-tag">Docker</span>
-                <span class="tech-tag">阿里云百炼 LLM</span>
-                <span class="tech-tag">Ollama</span>
-                <span class="tech-tag">MCP Protocol</span>
-            </div>
-
-            <h3 style="color:#00d2ff;margin-top:30px;margin-bottom:15px;">🎯 项目亮点</h3>
-            <table class="feature-table">
-                <tr><th>特性</th><th>说明</th></tr>
-                <tr><td>🧠 Agent 架构</td><td>基于 LangGraph 状态机，LLM Function Calling 驱动多轮工具调用</td></tr>
-                <tr><td>⚡ Skill 快速通道</td><td>声明式 steps 定义复杂闭环，绕开 LLM 直接确定性执行</td></tr>
-                <tr><td>💬 SSE 流式</td><td>Server-Sent Events 实时推送工具执行过程，前端打字机效果</td></tr>
-                <tr><td>🗂️ 会话持久化</td><td>MySQL 业务元数据 + AIOMySQLSaver 消息历史，服务重启自动恢复</td></tr>
-                <tr><td>🔌 MySQL 降级</td><td>数据库不可用时自动切内存存储，保障前端体验</td></tr>
-                <tr><td>🎯 机组灵敏度再调度</td><td>数值扰动法计算灵敏度，多轮迭代自动消过载</td></tr>
-                <tr><td>📡 MCP 协议</td><td>独立 MCP 服务器，可被任何支持 MCP 的 AI 客户端调用</td></tr>
-                <tr><td>🔧 真实电网支持</td><td>.json/.p/.xlsx 格式加载，孤立机组自动修复</td></tr>
-                <tr><td>🎨 可视化前端</td><td>Vue 3 + Element Plus + ECharts 图表分析</td></tr>
-            </table>
-        </div>
-
     </div>
 
-    <script>
-        mermaid.initialize({
-            startOnLoad: true,
-            theme: 'default',
-            securityLevel: 'loose',
-            flowchart: {
-                htmlLabels: true,
-                curve: 'basis'
-            }
+    <!-- ============ Skill 消过载流程 ============ -->
+    <div class="diagram-section">
+        <div class="diagram-title">四、Skill 消过载再调度闭环流程图</div>
+        <div class="diagram-desc">OVERLOAD_RELIEF_SKILL 声明式 steps 的执行流程，发电机灵敏度→再调度迭代直到全部线路回到限值以内</div>
+
+        <div class="mermaid">
+graph TB
+    START([Skill 被触发]) --> CHECK_NET{"电网已加载?<br/>gt.net != None?"}
+    CHECK_NET -- "否" --> ABORT["放弃 Skill<br/>yield aborted=True<br/>交回上层回退 LLM 先建网"]
+    CHECK_NET -- "是" --> INIT["初始化 _ReliefContext<br/>记录初始轮数=0 / best_max=0"]
+
+    INIT --> PF["<b>Step 1</b><br/>run_ac_power_flow<br/>跑基准潮流<br/>save → ctx.pf"]
+
+    PF --> OV["<b>Step 2</b><br/>get_line_overload_summary<br/>threshold=@loading_limit<br/>save → ctx.ov"]
+
+    OV --> CHECK_FREE{"<b>Check</b><br/>overload_free?<br/>基准潮流收敛?<br/>有过载线路?"}
+
+    CHECK_FREE -- "潮流不收敛" --> FAIL1["结束<br/>无法执行再调度"]
+    CHECK_FREE -- "无过载线路" --> SUCCESS0["结束<br/>无需再调度<br/>记录当前最大负载率"]
+    CHECK_FREE -- "存在过载" --> RELIEF["<b>relief_round</b><br/>执行一轮机组再调度"]
+
+    RELIEF --> LOCK["锁定目标线路<br/>→ 当前最严重的过载线路"]
+    LOCK --> SENS["calc_gen_sensitivity<br/>计算机组对目标线路的灵敏度<br/>扰动步长=delta_mw"]
+    SENS --> CANDIDATE["筛选候选机组<br/>有效方向=能降低目标线路潮流<br/>转移能力=|灵敏度|×可调容量<br/>按转移能力排序"]
+    CANDIDATE --> PICK["选 Top N 台<br/>（默认 top_n_gens=2）"]
+    PICK --> CALC_STEP["计算步长<br/>need = 把目标线路压回限值需削减的 MW<br/>按转移能力加权分配<br/>阻尼 0.9 防过冲"]
+    CALC_STEP --> ADJUST["adjust_gen_output × N<br/>逐台调整机组出力"]
+    ADJUST --> RE_PF["run_ac_power_flow<br/>重算潮流"]
+
+    RE_PF --> CONVERGED{"收敛?"}
+    CONVERGED -- "否" --> ROLLBACK1["回退本轮调整<br/>反向调回机组出力<br/>重算潮流恢复原状<br/>结束（需用户手动干预）"]
+    CONVERGED -- "是" --> RE_OV["get_line_overload_summary<br/>复查过载情况"]
+
+    RE_OV --> RELIEF_RESULT{"过载线路数=0?"}
+    RELIEF_RESULT -- "是 ✅" --> SUCCESS["🎉 成功<br/>所有线路已回到限值以内<br/>记录总轮数和各轮详情"]
+    RELIEF_RESULT -- "否" --> CHECK_WORSE{"<b>最大负载率</b><br/>比上轮恶化?"}
+    CHECK_WORSE -- "是 ⚠️" --> ROLLBACK2["回退本轮调整<br/>结束（说明仅靠机组再调度无解）"]
+    CHECK_WORSE -- "否" --> CHECK_NO_IMPROVE{"连续 N 轮<br/>无改善?"}
+    CHECK_NO_IMPROVE -- "是" --> STOP["停止<br/>判定调不动<br/>诚实告知现状"]
+    CHECK_NO_IMPROVE -- "否" --> CHECK_MAX_ROUNDS{"达到最大轮数?<br/>max_iterations=10?"}
+    CHECK_MAX_ROUNDS -- "是" --> LIMIT["达到轮数上限<br/>结束（兜底防死循环）"]
+    CHECK_MAX_ROUNDS -- "否" --> RELIEF
+
+    style START fill:#c8e6c9,stroke:#2e7d32,stroke-width:3px
+    style ABORT fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    style FAIL1 fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    style SUCCESS0 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style SUCCESS fill:#a5d6a7,stroke:#1b5e20,stroke-width:3px
+    style ROLLBACK1 fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    style ROLLBACK2 fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    style STOP fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+    style LIMIT fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+    style PF fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style OV fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style RELIEF fill:#fff3e0,stroke:#ef6c00,stroke-width:3px
+    style SENS fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style ADJUST fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style RE_PF fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+        </div>
+    </div>
+
+    <!-- ============ 工具清单 ============ -->
+    <div class="diagram-section">
+        <div class="diagram-title">五、17 个 LangChain 原子工具一览</div>
+        <div class="diagram-desc">所有工具以 @tool 装饰器定义，通过 LLM Function Calling 自动选择调用，内部全部委托给 GridTools 类实现</div>
+
+        <div class="mermaid">
+graph LR
+    subgraph GRID_CREATION["🏗️ 电网建模工具"]
+        A1["create_test_grid<br/>（内置算例）"]
+        A2["load_grid_from_file<br/>（真实电网文件）"]
+        A3["reset_grid_session<br/>（清空重来）"]
+    end
+
+    subgraph CALC["🧮 计算分析工具"]
+        B1["run_ac_power_flow<br/>交流潮流"]
+        B2["run_n1_security_check<br/>N-1 安全校核"]
+        B3["analyze_with_outage<br/>假想退出工况"]
+        B4["calculate_loss_analysis<br/>损耗分析"]
+    end
+
+    subgraph ANALYZE["🔍 状态检查工具"]
+        C1["get_line_overload_summary<br/>线路过载"]
+        C2["get_voltage_violation_summary<br/>电压越限"]
+        C3["generate_risk_report<br/>综合风险报告"]
+        C4["get_grid_topology<br/>拓扑结构"]
+        C5["list_grid_elements<br/>元件清单"]
+    end
+
+    subgraph ADJUST["🎛️ 电网调整工具"]
+        D1["set_load_scale<br/>负荷倍率缩放"]
+        D2["set_element_status<br/>元件投运状态"]
+        D3["adjust_gen_output<br/>机组出力调整"]
+        D4["calc_gen_sensitivity<br/>机组灵敏度计算"]
+    end
+
+    subgraph KNOWLEDGE["📚 知识查询"]
+        E1["query_knowledge<br/>规程/定义/方法"]
+    end
+
+    style GRID_CREATION fill:#e3f2fd,stroke:#1565c0,stroke-width:3px
+    style CALC fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px
+    style ANALYZE fill:#fff3e0,stroke:#ef6c00,stroke-width:3px
+    style ADJUST fill:#f3e5f5,stroke:#7b1fa2,stroke-width:3px
+    style KNOWLEDGE fill:#fff8e1,stroke:#f57f17,stroke-width:3px
+        </div>
+    </div>
+
+    <!-- ============ 数据持久化 ============ -->
+    <div class="diagram-section">
+        <div class="diagram-title">六、数据持久化与会话隔离机制</div>
+        <div class="diagram-desc">业务元数据与消息历史分别存于不同介质，通过 session_id = thread_id 一一对应</div>
+
+        <div class="mermaid">
+graph TB
+    subgraph EACH_SESSION["每个会话 (session_id = UUID hex)"]
+        direction LR
+        
+        subgraph MYSQL["MySQL POWER_SESSIONS 表"]
+            M1["ID (PK)"]
+            M2["NAME"]
+            M3["USER_ID"]
+            M4["CONFIG_JSON"]
+            M5["GRID_META_JSON<br/>· last_grid_type<br/>· last_grid_file<br/>· load_factor"]
+            M6["LAST_MESSAGE"]
+            M7["MESSAGE_COUNT"]
+        end
+
+        subgraph CHECKPOINT["AIOMySQLSaver Checkpoint"]
+            C1["thread_id = session_id"]
+            C2["channel_values.messages<br/>LangGraph 消息历史<br/>Human + AI + ToolMessage"]
+            C3["自动写入<br/>每次图跑完"]
+        end
+
+        subgraph MEMORY["Python 内存字典"]
+            DICT["_sessions: Dict<br/>session_id → GridTools 实例"]
+            GT["GridTools.net<br/>pandapowerNet 对象<br/>（实际电网数据在内存中）"]
+            DICT --> GT
+        end
+    end
+
+    MYSQL -->|"1:1 对应<br/>相同 session_id"| CHECKPOINT
+    CHECKPOINT -.->|"同一 session_id<br/>消息恢复给 LLM"| LLM_REPLY["下轮对话时<br/>作为上下文传给 LLM"]
+    MYSQL -.->|"服务重启后<br/>从 grid_meta 恢复"| MEMORY
+    
+    style MYSQL fill:#ede7f6,stroke:#4527a0,stroke-width:3px
+    style CHECKPOINT fill:#e1f5fe,stroke:#0277bd,stroke-width:3px
+    style MEMORY fill:#fff3e0,stroke:#ef6c00,stroke-width:3px
+        </div>
+    </div>
+
+</div>
+
+<div class="zoom-controls">
+    <button class="zoom-btn" onclick="zoomAll(0.85)" title="缩小">−</button>
+    <button class="zoom-btn" onclick="zoomAll(1.18)" title="放大">+</button>
+    <button class="zoom-btn reset" onclick="zoomAll(1/zoomLevel)" title="重置">100%</button>
+</div>
+
+<script>
+    var zoomLevel = 1;
+    function zoomAll(factor) {
+        zoomLevel *= factor;
+        document.querySelectorAll('.mermaid svg').forEach(function(svg) {
+            svg.style.transform = 'scale(' + zoomLevel + ')';
+            svg.style.transformOrigin = 'center top';
         });
-    </script>
+    }
+
+    mermaid.initialize({
+        startOnLoad: true,
+        theme: 'base',
+        themeVariables: {
+            fontSize: '18px',
+            fontFamily: 'Microsoft YaHei, PingFang SC, sans-serif',
+            primaryColor: '#e3f2fd',
+            primaryTextColor: '#222',
+            primaryBorderColor: '#1565c0',
+            lineColor: '#555',
+            secondaryColor: '#e8f5e9',
+            tertiaryColor: '#fff3e0',
+            background: '#ffffff',
+            mainBkg: '#e3f2fd',
+            nodeBorder: '#333',
+            clusterBkg: '#f4f6fa',
+            titleColor: '#1a3a5c',
+            edgeLabelBackground: '#ffffff'
+        },
+        flowchart: {
+            htmlLabels: true,
+            curve: 'basis',
+            useMaxWidth: true,
+            padding: 20,
+            nodeSpacing: 50,
+            rankSpacing: 50
+        },
+        sequence: {
+            diagramMarginX: 80,
+            diagramMarginY: 40,
+            actorMargin: 80,
+            boxMargin: 20,
+            boxTextMargin: 10,
+            noteMargin: 20,
+            messageMargin: 50,
+            wrap: true,
+            width: 200
+        }
+    });
+</script>
+
 </body>
 </html>

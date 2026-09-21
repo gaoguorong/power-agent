@@ -10,7 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from models import get_db_session
 from schemas import ChatRequest, json_dumps_safe
-from services import SessionService, GraphService, memory_sessions
+from services import SessionService, GraphService
 
 router = APIRouter(prefix="/api/sessions", tags=["聊天"])
 
@@ -52,8 +52,6 @@ async def chat_stream(
                 pass
     except Exception as exc:
         print(f"[降级] chat_stream MySQL 查询失败：{exc}")
-    if not session_exists and session_id not in memory_sessions:
-        raise HTTPException(status_code=404, detail="会话不存在，请先创建会话")
 
     # ------------------------------------------------------------
     # SSE 事件生成器：一边调用 GraphAgent，一边把事件推给前端
@@ -95,8 +93,7 @@ async def chat_stream(
                         await session_service.update_last_message(session_id, final_ai_text, delta_count=2)
                     except Exception:
                         pass
-                # 再更新内存（如果是降级模式）
-                memory_sessions.touch(session_id, final_ai_text, delta_count=2)
+
         except Exception as exc:  # noqa: BLE001
             yield {
                 "event": "error",

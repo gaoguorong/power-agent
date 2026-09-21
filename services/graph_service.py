@@ -1,7 +1,4 @@
 import json
-import math
-import uuid
-import time
 import asyncio
 import traceback
 from typing import Any, Dict, List, Optional, AsyncGenerator
@@ -74,7 +71,7 @@ class GraphService:
         return {"matched_skill": skill}
 
     # ==============================================================
-    # 0.5 Checkpointer 辅助：图跑完自动存，skill 旁路要手动写一次
+    # 0.5 Checkpointer 辅助：图跑完自动存，skill 旁路用 aupdate_state 补写
     # ==============================================================
     async def _checkpoint_get_messages(self, session_id: str) -> List[BaseMessage]:
         config = {"configurable": {"thread_id": session_id}}
@@ -85,34 +82,21 @@ class GraphService:
         msgs = channel_values.get("messages", [])
         return [m for m in msgs if isinstance(m, BaseMessage)]
 
-    async def _checkpoint_put(self, session_id: str, state: Dict[str, Any], source: str = "skill") -> None:
-        """手动往 checkpointer 写一次 state（skill 旁路跑完后用）"""
+    async def _persist_skill_messages(self, session_id: str,
+                                      messages: List[BaseMessage]) -> None:
+        """把 skill 旁路产生的消息追加进 checkpoint（官方带外状态写入）。
+
+        skill 旁路跑在编译图外，其消息不进 messages 通道；手动覆写 checkpoint
+        会被图自身更新的 checkpoint 写入遮蔽，导致刷新后丢失。aupdate_state
+        走 add_messages reducer 以子 checkpoint 追加，历史与 HumanMessage 都保留。
+        必须在 astream 结束后调用，避免与图自身的写入竞争。
+        """
+        if not messages:
+            return
         try:
-            config = {"configurable": {"thread_id": session_id}}
-            tuple_ = await self._checkpointer.aget_tuple(config)
-
-            if tuple_ is not None and tuple_.checkpoint:
-                existing_cp = tuple_.checkpoint
-                channel_values = dict(existing_cp.get("channel_values", {}))
-                channel_values["messages"] = state["messages"]
-                checkpoint = dict(existing_cp)
-                checkpoint["channel_values"] = channel_values
-            else:
-                checkpoint = {
-                    "v": 4,
-                    "id": str(uuid.uuid4()),
-                    "ts": time.time_ns() // 1_000_000,
-                    "channel_values": {
-                        "messages": state["messages"],
-                        "session_id": session_id,
-                    },
-                    "channel_versions": {},
-                    "versions_seen": {},
-                    "updated_channels": ["messages"],
-                }
-
-            step = ((tuple_.metadata or {}).get("step", 0) + 1) if tuple_ else 0
-            await self._checkpointer.aput(config, checkpoint, {"source": source, "step": step})
+            await self._compiled.aupdate_state(
+                {"configurable": {"thread_id": session_id}},
+                {"messages": messages}, as_node="tools")
         except Exception:
             pass
 
@@ -130,85 +114,98 @@ class GraphService:
         cfg = {"configurable": {"thread_id": session_id},
                "recursion_limit": RECURSION_LIMIT}
 
+        human_msg = HumanMessage(content=question)
         state: Dict[str, Any] = {
-            "messages": [HumanMessage(content=question)],
+            "messages": [human_msg],
             "session_id": session_id,
             "question": question,
         }
 
-        msgs: List[BaseMessage] = []
         tool_runs: List[Dict[str, Any]] = []
+        skill_msgs: List[BaseMessage] = []
+        skill_done = False
 
         yield {"event": "welcome", "data": {"session_id": session_id, "question": question}}
 
         try:
-            skill_done = False
-            async for ev in self._run_skill_channel(session_id, question, state, tool_runs):
+            # 前置 skill 快速通道：命中则直接接管，不进编译图
+            async for ev in self._run_skill_channel(session_id, question, tool_runs,
+                                                    skill_msgs):
                 if ev is _SKILL_DONE:
                     skill_done = True
                     continue
                 yield ev
-            if skill_done:
-                return
+            pre_skill = skill_done
 
-            async for chunk in self._compiled.astream(state, config=cfg, stream_mode="updates"):
-                for node_name, update in chunk.items():
-                    if node_name == "agent":
-                        ai_msg = update["messages"][-1]
-                        msgs.append(ai_msg)
+            # 正常 LLM 流程；后置触发会在中途接管给 skill
+            stop = False
+            if not skill_done:
+                async for chunk in self._compiled.astream(state, config=cfg,stream_mode="updates"):
+                    for node_name, update in chunk.items():
+                        if node_name == "agent":
+                            ai_msg = update["messages"][-1]
 
-                        if not getattr(ai_msg, "tool_calls", None):
-                            gt = langchain_tool.get_grid_tools_obj(session_id)
-                            after_skill = await asyncio.to_thread(
-                                match_skill_after_llm, question, gt)
-                            if after_skill is not None:
-                                async for ev in self._run_skill_channel(
-                                        session_id, question, {"messages": msgs}, tool_runs,
-                                        pre_matched_skill=after_skill):
-                                    if ev is _SKILL_DONE:
-                                        return
-                                    yield ev
-                                return
-
-                            text = (ai_msg.content or "").strip()
-                            if text:
-                                yield {"event": "token", "data": {"text": text}}
-                            yield {"event": "done",
-                                   "data": {"ai_text": text, "tool_runs": tool_runs}}
-                            return
-
-                        for tc in ai_msg.tool_calls:
-                            args = tc.get("args") or {}
-                            tool_runs.append({"name": tc["name"], "input": args,
-                                              "output": None, "status": "running",
-                                              "_call_id": tc.get("id", "")})
-                            yield {"event": "tool_start", "data": {
-                                "name": tc["name"],
-                                "input": _safe_preview(args),
-                                "run_id": tc.get("id", ""),
-                            }}
-
-                    elif node_name == "tools":
-                        for tm in update["messages"]:
-                            msgs.append(tm)
-                            output = _parse_json_if_possible(tm.content)
-                            _fill_tool_run(tool_runs, tm.name, output,
-                                           getattr(tm, "tool_call_id", ""))
-                            yield {"event": "tool_end", "data": {
-                                "name": tm.name,
-                                "output_preview": _safe_preview(output, 200),
-                            }}
-
-                    elif node_name == "skill_check":
-                        matched = update.get("matched_skill")
-                        if matched is not None:
-                            async for ev in self._run_skill_channel(
-                                    session_id, question, {"messages": msgs}, tool_runs,
-                                    pre_matched_skill=matched):
-                                if ev is _SKILL_DONE:
+                            if not getattr(ai_msg, "tool_calls", None):
+                                gt = langchain_tool.get_grid_tools_obj(session_id)
+                                after_skill = await asyncio.to_thread(
+                                    match_skill_after_llm, question, gt)
+                                if after_skill is not None:
+                                    async for ev in self._run_skill_channel(
+                                            session_id, question, tool_runs, skill_msgs,
+                                            pre_matched_skill=after_skill):
+                                        if ev is _SKILL_DONE:
+                                            skill_done = True
+                                            continue
+                                        yield ev
+                                    stop = True
+                                else:
+                                    text = (ai_msg.content or "").strip()
+                                    if text:
+                                        yield {"event": "token", "data": {"text": text}}
+                                    yield {"event": "done",
+                                           "data": {"ai_text": text, "tool_runs": tool_runs}}
                                     return
-                                yield ev
-                            return
+
+                            for tc in ai_msg.tool_calls:
+                                args = tc.get("args") or {}
+                                tool_runs.append({"name": tc["name"], "input": args,
+                                                  "output": None, "status": "running",
+                                                  "_call_id": tc.get("id", "")})
+                                yield {"event": "tool_start", "data": {
+                                    "name": tc["name"],
+                                    "input": _safe_preview(args),
+                                    "run_id": tc.get("id", ""),
+                                }}
+
+                        elif node_name == "tools":
+                            for tm in update["messages"]:
+                                output = _parse_json_if_possible(tm.content)
+                                _fill_tool_run(tool_runs, tm.name, output,
+                                               getattr(tm, "tool_call_id", ""))
+                                yield {"event": "tool_end", "data": {
+                                    "name": tm.name,
+                                    "output_preview": _safe_preview(output, 200),
+                                }}
+
+                        elif node_name == "skill_check":
+                            matched = update.get("matched_skill")
+                            if matched is not None:
+                                async for ev in self._run_skill_channel(
+                                        session_id, question, tool_runs, skill_msgs,
+                                        pre_matched_skill=matched):
+                                    if ev is _SKILL_DONE:
+                                        skill_done = True
+                                        continue
+                                    yield ev
+                                stop = True
+                    if stop:
+                        break  # 先退出图再补写 skill 消息，避免被图后续的 checkpoint 写入遮蔽
+
+            if skill_done:
+                # 前置路径图没跑过，HumanMessage 还没进 checkpoint，需一并补上
+                to_persist = ([human_msg] if pre_skill else []) + skill_msgs
+                await self._persist_skill_messages(session_id, to_persist)
+                return
             yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
                                              "warning": "max_rounds"}}
 
@@ -225,8 +222,8 @@ class GraphService:
         self,
         session_id: str,
         question: str,
-        state: Dict[str, Any],
         tool_runs: List[Dict[str, Any]],
+        out_messages: List[BaseMessage],
         pre_matched_skill: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Any, None]:
         skill = pre_matched_skill if pre_matched_skill is not None else match_skill(question)
@@ -277,12 +274,12 @@ class GraphService:
                     return
                 final_text = ev.get("text", "") or ""
 
+        # skill 产生的消息收集到 out_messages，由调用方在图结束后统一补写 checkpoint
         if tool_calls:
-            state["messages"].append(AIMessage(content="", tool_calls=tool_calls))
-            state["messages"].extend(tool_msgs)
+            out_messages.append(AIMessage(content="", tool_calls=tool_calls))
+            out_messages.extend(tool_msgs)
         if final_text:
-            state["messages"].append(AIMessage(content=final_text))
-        await self._checkpoint_put(session_id, state, source="skill")
+            out_messages.append(AIMessage(content=final_text))
 
         if final_text:
             yield {"event": "token", "data": {"text": final_text}}

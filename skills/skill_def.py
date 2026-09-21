@@ -28,11 +28,11 @@ OVERLOAD_RELIEF_SKILL = {
     "max_iterations": 10,            # 最多再调度轮数(兜底防死循环)
     "no_improve_limit": 2,           # 连续N轮无改善则判定调不动、停止
     "top_n_gens": 2,                 # 每轮协同调整的机组台数(按转移能力选最强)
-    # 流程编排（声明式 steps）：执行器按序解释，loop 回到第一步再来一轮。
+    # 流程编排（声明式 steps）：执行器按序解释，loop 回到指定步(to,默认0)再来一轮。
     #   tool    —— 调电网工具，结果存 save（params 值以 @ 开头表示从本技能配置取）
     #   check   —— 谓词判断走 then/else 分支
     #   step_fn —— 调 skill_runner 注册的具名 handler（封装数值密集逻辑）
-    #   end/loop—— 结束闭环 / 回到第一步循环
+    #   end/loop—— 结束闭环 / 回到指定步再来一轮
     # ------------------------------------------------------------
     "steps": [
         {"action": "tool", "tool": "run_ac_power_flow", "save": "pf"},
@@ -44,6 +44,7 @@ OVERLOAD_RELIEF_SKILL = {
          "else": {"action": "step_fn", "fn": "relief_round"}},   # 有过载 → 单轮再调度
         {"action": "check", "check": "relief_finished",
          "then": {"action": "end"},                    # 收敛/停滞/恶化/达上限 → 结束
-         "else": {"action": "loop"}},                  # 未定论 → 回到第 1 步再来一轮
+         # relief_round 已把调整后复查的 pf/ov 写回 saved，新一轮直接做过载检查，不重算同状态
+         "else": {"action": "loop", "to": 2}},
     ],
 }
