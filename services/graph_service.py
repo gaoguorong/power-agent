@@ -12,8 +12,8 @@ from executors.registry import build_default_registry
 from schemas.tool_result import normalize_tool_result
 from tools import langchain_tool
 from tools.langchain_tool import ALL_TOOLS
-from skills.skill_runner import (match_skill, match_skill_after_llm,
-                                   run_overload_relief)
+from skills.router import router as skill_router
+from skills.skill_runner import run_overload_relief
 
 from .graph_util import (_safe_preview, _sanitize_non_finite, _parse_json_if_possible,
                          _fill_tool_run,_messages_to_frontend_format)
@@ -66,8 +66,16 @@ class GraphService:
 
     def _skill_check_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         gt = langchain_tool.get_grid_tools_obj(state.get("session_id", "default"))
-        skill = match_skill_after_llm(state.get("question", ""), gt)
-        return {"matched_skill": skill}
+        skill = skill_router.match_after_llm(state.get("question", ""), gt)
+
+        if skill is not None:
+            return {"matched_skill": skill, "skill_route": "end"}
+
+        last_msg = state["messages"][-1]
+        if isinstance(last_msg, ToolMessage):
+            return {"matched_skill": None, "skill_route": "agent"}
+
+        return {"matched_skill": None, "skill_route": "end"}
 
     # ==============================================================
     # 0.5 Checkpointer 辅助：图跑完自动存，skill 旁路用 aupdate_state 补写
@@ -120,6 +128,7 @@ class GraphService:
         tool_runs: List[Dict[str, Any]] = []
         skill_msgs: List[BaseMessage] = []
         skill_done = False
+        last_ai_text = ""
 
         yield {"event": "welcome", "data": {"session_id": session_id, "question": question}}
 
@@ -133,35 +142,16 @@ class GraphService:
                 yield ev
             pre_skill = skill_done
 
-            # 正常 LLM 流程；后置触发会在中途接管给 skill
             stop = False
             if not skill_done:
-                async for chunk in self._compiled.astream(state, config=cfg,stream_mode="updates"):
+                async for chunk in self._compiled.astream(state, config=cfg, stream_mode="updates"):
                     for node_name, update in chunk.items():
+
                         if node_name == "agent":
                             ai_msg = update["messages"][-1]
-
-                            if not getattr(ai_msg, "tool_calls", None):
-                                gt = langchain_tool.get_grid_tools_obj(session_id)
-                                after_skill = await asyncio.to_thread(
-                                    match_skill_after_llm, question, gt)
-                                if after_skill is not None:
-                                    async for ev in self._run_skill_channel(
-                                            session_id, question, tool_runs, skill_msgs,
-                                            pre_matched_skill=after_skill):
-                                        if ev is _SKILL_DONE:
-                                            skill_done = True
-                                            continue
-                                        yield ev
-                                    stop = True
-                                else:
-                                    text = (ai_msg.content or "").strip()
-                                    if text:
-                                        yield {"event": "token", "data": {"text": text}}
-                                    yield {"event": "done",
-                                           "data": {"ai_text": text, "tool_runs": tool_runs}}
-                                    return
-
+                            text = (ai_msg.content or "").strip()
+                            if text:
+                                last_ai_text = text
                             for tc in ai_msg.tool_calls:
                                 args = tc.get("args") or {}
                                 tool_runs.append({"name": tc["name"], "input": args,
@@ -198,12 +188,15 @@ class GraphService:
                         break  # 先退出图再补写 skill 消息，避免被图后续的 checkpoint 写入遮蔽
 
             if skill_done:
-                # 前置路径图没跑过，HumanMessage 还没进 checkpoint，需一并补上
                 to_persist = ([human_msg] if pre_skill else []) + skill_msgs
                 await self._persist_skill_messages(session_id, to_persist)
                 return
-            yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
-                                             "warning": "max_rounds"}}
+            if last_ai_text:
+                yield {"event": "token", "data": {"text": last_ai_text}}
+                yield {"event": "done", "data": {"ai_text": last_ai_text, "tool_runs": tool_runs}}
+            else:
+                yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
+                                                 "warning": "max_rounds"}}
 
         except GraphRecursionError:
             yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
@@ -222,7 +215,7 @@ class GraphService:
         out_messages: List[BaseMessage],
         pre_matched_skill: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Any, None]:
-        skill = pre_matched_skill if pre_matched_skill is not None else match_skill(question)
+        skill = pre_matched_skill if pre_matched_skill is not None else skill_router.match(question)
         if skill is None:
             return
         gt = langchain_tool.get_grid_tools_obj(session_id)

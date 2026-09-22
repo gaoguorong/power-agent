@@ -55,7 +55,7 @@ class GraphAgent:
         graph.add_edge(START, "agent")
         graph.add_conditional_edges("agent", self.should_continue, {
             "inject_session": "inject_session",
-            END: END,
+            "skill_check": "skill_check",
         })
         graph.add_edge("inject_session", "tools")
         graph.add_edge("tools", "skill_check")
@@ -103,13 +103,12 @@ class GraphAgent:
         last_msg = state["messages"][-1]
         if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
             return "inject_session"
-        return END
+        return "skill_check"
 
     @staticmethod
     def route_after_skill(state: "AgentState"):
-        return END if state.get("matched_skill") else "agent"
-
-
+        route = state.get("skill_route")
+        return END if route == "end" else route
 
 if __name__ == "__main__":
     cfg_zhangsan = {"configurable": {"thread_id": "sess-zhangsan-demo-001"}}

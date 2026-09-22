@@ -8,3 +8,4 @@ class AgentState(TypedDict):
     session_id: str
     question: str
     matched_skill: Optional[Dict[str, Any]]
+    skill_route: Optional[str]
