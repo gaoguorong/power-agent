@@ -12,7 +12,7 @@ from executors.registry import build_default_registry
 from schemas.tool_result import normalize_tool_result
 from tools import langchain_tool
 from tools.langchain_tool import ALL_TOOLS
-from skills.router import router as skill_router
+from skills.SkillRouter import router as skill_router
 from skills.skill_runner import run_overload_relief
 
 from .graph_util import (_safe_preview, _sanitize_non_finite, _parse_json_if_possible,
