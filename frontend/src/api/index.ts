@@ -63,6 +63,10 @@ export const api = {
   resetSessionGrid: (id: string) =>
     request.post<any, any>(`/api/sessions/${id}/reset`),
 
+  // 查询会话里等待 resume 的人工审批（刷新后恢复审批面板用）
+  getPendingInterrupt: (id: string) =>
+    request.get<any, any>(`/api/sessions/${id}/chat/pending_interrupt`),
+
   // 聊天接口（SSE 流式）直接自己调用 fetch，不走 axios
 }
 

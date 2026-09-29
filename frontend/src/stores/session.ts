@@ -8,6 +8,8 @@ import type {
   QuickQuestion,
   ToolRun,
   SseEventType,
+  PendingInterrupt,
+  InterruptData,
 } from '@/types'
 import { ElMessage } from 'element-plus'
 
@@ -20,12 +22,11 @@ interface SessionState {
   } | null
   sessions: SessionSummary[]
   currentSessionId: string | null
-  // 每个会话的消息缓存（避免反复请求）
   messageMap: Record<string, ChatMessage[]>
   loading: boolean
   isStreaming: boolean
-  // 当前会话正在运行中的工具（用于气泡里实时显示"正在做xx"）
   liveToolRuns: Record<string, ToolRun>
+  pendingInterrupt: PendingInterrupt | null
 }
 
 export const useSessionStore = defineStore('session', {
@@ -37,6 +38,7 @@ export const useSessionStore = defineStore('session', {
     loading: false,
     isStreaming: false,
     liveToolRuns: {},
+    pendingInterrupt: null,
   }),
 
   getters: {
@@ -90,6 +92,25 @@ export const useSessionStore = defineStore('session', {
           if (idx >= 0) {
             this.sessions[idx] = { ...this.sessions[idx], ...data }
           }
+        }
+        // 恢复待处理的人工审批：刷新页面/切会话后审批面板不能丢
+        try {
+          const pi = (await api.getPendingInterrupt(id)) as any
+          const value = pi?.interrupt ?? null
+          if (value && !this.isStreaming) {
+            this.pendingInterrupt = {
+              data: {
+                question: value.question || 'AI 计划执行以下操作，是否继续？',
+                tool_calls: value.tool_calls || [],
+              },
+              sessionId: id,
+              status: 'pending',
+            }
+          } else if (!value && this.pendingInterrupt?.sessionId === id) {
+            this.pendingInterrupt = null
+          }
+        } catch {
+          // 查询失败不阻塞消息加载
         }
       } catch (e) {
         this.messageMap[id] = []
@@ -185,6 +206,70 @@ export const useSessionStore = defineStore('session', {
       } finally {
         this.isStreaming = false
         this.liveToolRuns = {}
+      }
+    },
+
+    async sendResume(sessionId: string, decision: 'approve' | 'reject') {
+      if (!this.pendingInterrupt || this.pendingInterrupt.sessionId !== sessionId) return
+      this.pendingInterrupt.status = 'processing'
+      this.isStreaming = true
+
+      if (decision === 'reject') {
+        const assistantMsg = this.getLastAssistantMessage(sessionId)
+        if (assistantMsg) {
+          assistantMsg.content =
+            (assistantMsg.pending_tokens || assistantMsg.content || '') +
+            '\n\n⛔ 用户拒绝了 AI 的操作建议，AI 将重新考虑方案。'
+        }
+      }
+
+      try {
+        await this._streamResume(sessionId, decision)
+        await this.loadSessions()
+      } catch (e: any) {
+        ElMessage.error(e?.message || '恢复执行失败')
+      } finally {
+        this.isStreaming = false
+        this.pendingInterrupt = null
+        this.liveToolRuns = {}
+      }
+    },
+
+    async _streamResume(sessionId: string, decision: string) {
+      const resp = await fetch(`/api/sessions/${sessionId}/chat/resume`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({ question: decision }),
+      })
+
+      if (!resp.ok || !resp.body) {
+        throw new Error(`HTTP ${resp.status} ${resp.statusText}`)
+      }
+
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder('utf-8')
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+
+        let boundary: number
+        while ((boundary = buffer.indexOf('\n\n')) >= 0 || (boundary = buffer.indexOf('\r\n\r\n')) >= 0) {
+          const sepLen = buffer.startsWith('\r\n\r\n', boundary) ? 4 : 2
+          const rawEvent = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + sepLen)
+          this._handleRawSseEvent(sessionId, rawEvent)
+        }
+      }
+
+      if (buffer.trim()) {
+        this._handleRawSseEvent(sessionId, buffer)
       }
     },
 
@@ -329,6 +414,18 @@ export const useSessionStore = defineStore('session', {
           assistantMsg.content =
             (assistantMsg.pending_tokens || assistantMsg.content) +
             `\n\n❌ 处理过程中出错：${payload?.message || '未知错误'}`
+          break
+        }
+        case 'interrupt': {
+          const data: InterruptData = {
+            question: payload?.question || 'AI 计划执行以下操作，是否继续？',
+            tool_calls: payload?.tool_calls || [],
+          }
+          this.pendingInterrupt = {
+            data,
+            sessionId: sessionId,
+            status: 'pending',
+          }
           break
         }
       }

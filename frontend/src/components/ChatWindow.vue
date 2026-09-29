@@ -47,8 +47,46 @@
           :message="m"
         />
         <!-- 打字机状态下的光标闪烁 -->
-        <div v-if="store.isStreaming && hasLatestAssistant" class="typing-dot">
+        <div v-if="store.isStreaming && hasLatestAssistant && !store.pendingInterrupt" class="typing-dot">
           <span /><span /><span />
+        </div>
+
+        <!-- ============== 人工审批面板 ============== -->
+        <div v-if="store.pendingInterrupt" class="interrupt-panel">
+          <div class="interrupt-header">
+            <el-icon class="warn-icon" :size="18"><WarningFilled /></el-icon>
+            <span>{{ store.pendingInterrupt.data.question }}</span>
+          </div>
+          <div class="interrupt-tools">
+            <div
+              v-for="(tc, idx) in store.pendingInterrupt.data.tool_calls"
+              :key="idx"
+              class="interrupt-tool-item"
+            >
+              <span class="tool-name">{{ tc.name }}</span>
+              <code class="tool-args">{{ stringify(tc.args) }}</code>
+            </div>
+          </div>
+          <div class="interrupt-actions">
+            <el-button
+              type="danger"
+              size="small"
+              :loading="store.pendingInterrupt.status === 'processing'"
+              :disabled="store.isStreaming"
+              @click="onReject"
+            >
+              拒绝，换个方案
+            </el-button>
+            <el-button
+              type="primary"
+              size="small"
+              :loading="store.pendingInterrupt.status === 'processing'"
+              :disabled="store.isStreaming"
+              @click="onApprove"
+            >
+              批准执行
+            </el-button>
+          </div>
         </div>
       </div>
     </el-scrollbar>
@@ -77,7 +115,7 @@
             type="textarea"
             :autosize="{ minRows: 2, maxRows: 5 }"
             :placeholder="placeholderText"
-            :disabled="store.isStreaming"
+            :disabled="store.isStreaming || !!store.pendingInterrupt"
             @keydown="onKeyDown"
             resize="none"
           />
@@ -105,7 +143,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import {
-  Lightning, MagicStick, Promotion, Loading,
+  Lightning, MagicStick, Promotion, Loading, WarningFilled,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ChatMessageItem from '@/components/ChatMessageItem.vue'
@@ -125,6 +163,7 @@ const hasLatestAssistant = computed(() => {
 })
 
 const placeholderText = computed(() => {
+  if (store.pendingInterrupt) return '⚠️ 有待审批的操作，请先在上方审批面板批准或拒绝'
   if (!store.options?.llm_available) return '⚠️ 未配置LLM，可能无法正确分析问题，请检查后端配置'
   return '请输入问题，例如：基于30节点系统做潮流计算，检查过载和电压越限...'
 })
@@ -132,7 +171,8 @@ const placeholderText = computed(() => {
 const canSend = computed(
   () =>
     !!inputText.value.trim() &&
-    !store.isStreaming,
+    !store.isStreaming &&
+    !store.pendingInterrupt,
 )
 
 // 监听消息变化：自动滚到底部
@@ -193,6 +233,26 @@ async function doSend() {
     await store.sendQuestion(sid, q)
   } catch (e: any) {
     ElMessage.error(e?.message || '发送失败')
+  }
+}
+
+async function onApprove() {
+  if (!store.pendingInterrupt) return
+  const sid = store.pendingInterrupt.sessionId
+  await store.sendResume(sid, 'approve')
+}
+
+async function onReject() {
+  if (!store.pendingInterrupt) return
+  const sid = store.pendingInterrupt.sessionId
+  await store.sendResume(sid, 'reject')
+}
+
+function stringify(obj: any) {
+  try {
+    return JSON.stringify(obj)
+  } catch {
+    return String(obj)
   }
 }
 </script>
@@ -298,6 +358,71 @@ async function doSend() {
 @keyframes blink {
   0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
   40% { opacity: 1; transform: scale(1); }
+}
+
+/* ---------- 人工审批面板 ---------- */
+.interrupt-panel {
+  margin-left: 56px;
+  margin-top: 10px;
+  padding: 14px 16px;
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  border-left: 4px solid #ff9800;
+  border-radius: 10px;
+
+  .interrupt-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #e65100;
+    margin-bottom: 10px;
+
+    .warn-icon { color: #ff9800; }
+  }
+
+  .interrupt-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+
+    .interrupt-tool-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.6);
+      border-radius: 6px;
+      font-size: 12.5px;
+
+      .tool-name {
+        font-family: 'JetBrains Mono', Consolas, monospace;
+        font-weight: 600;
+        color: #00695c;
+        flex-shrink: 0;
+      }
+      .tool-args {
+        font-family: Consolas, monospace;
+        font-size: 11.5px;
+        color: #4b5563;
+        background: rgba(0, 0, 0, 0.04);
+        padding: 2px 6px;
+        border-radius: 4px;
+        max-width: 400px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+    }
+  }
+
+  .interrupt-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  }
 }
 
 /* ---------- 输入区 ---------- */

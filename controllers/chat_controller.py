@@ -9,10 +9,60 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from models import get_db_session
-from schemas import ChatRequest, json_dumps_safe
+from schemas import ChatRequest, json_dumps_safe, ok
 from services import SessionService, GraphService
 
 router = APIRouter(prefix="/api/sessions", tags=["聊天"])
+
+
+@router.get("/{session_id}/chat/pending_interrupt")
+async def get_pending_interrupt(session_id: str):
+    """
+    查询该会话是否有等待 resume 的 interrupt（人工审批）。
+    前端刷新页面/切换会话后用它恢复审批面板，避免审批请求"丢"在 checkpoint 里。
+    """
+    graph = GraphService.get_instance()
+    await graph.ensure_init()
+    snapshot = await graph._compiled.aget_state(
+        {"configurable": {"thread_id": session_id}})
+    value = snapshot.interrupts[0].value if snapshot.interrupts else None
+    return ok({"interrupt": value})
+
+
+@router.post("/{session_id}/chat/resume")
+async def chat_resume(
+    session_id: str,
+    req: ChatRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    人工审批恢复：前端在收到 interrupt 事件后，用户点击"批准/拒绝"调这个接口。
+    SSE 推送后续的执行结果。
+    """
+    async def event_generator():
+        try:
+            graph = GraphService.get_instance()
+            async for ev in graph.chat_resume(session_id, req.question):
+                if await request.is_disconnected():
+                    return
+                ev.setdefault("data", {})
+                ev["data"]["session_id"] = session_id
+                yield {"event": ev["event"], "data": json_dumps_safe(ev)}
+        except Exception as exc:
+            yield {
+                "event": "error",
+                "data": json_dumps_safe({
+                    "event": "error",
+                    "data": {
+                        "session_id": session_id,
+                        "message": f"{type(exc).__name__}: {exc}",
+                        "traceback": traceback.format_exc(limit=3),
+                    },
+                }),
+            }
+
+    return EventSourceResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.post("/{session_id}/chat/stream")

@@ -5,9 +5,9 @@ from typing import Any, Dict, List, Optional, AsyncGenerator
 
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
 from langgraph.errors import GraphRecursionError
+from langgraph.types import Command
 
 from agents.graph_agent import GraphAgent
-from executors.base import ToolExecutionRequest
 from executors.registry import build_default_registry
 from schemas.tool_result import normalize_tool_result
 from tools import langchain_tool
@@ -58,11 +58,11 @@ class GraphService:
     async def close(self):
         await self._graph_agent.close()
 
-    async def _tools_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    def _tools_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         last_msg = state["messages"][-1]
         if not (isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None)):
             return {}
-        return {"messages": await asyncio.to_thread(self._execute_tools, last_msg.tool_calls)}
+        return {"messages": self._execute_tools(last_msg.tool_calls)}
 
     def _skill_check_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         gt = langchain_tool.get_grid_tools_obj(state.get("session_id", "default"))
@@ -105,7 +105,80 @@ class GraphService:
             pass
 
     # ==============================================================
-    # 1. 流式聊天：驱动编译图逐节点产出，转成 SSE 事件
+    # 1. 公共：驱动编译图 astream + 事件分发 + interrupt 检测
+    #    对外两个入口 chat_stream / chat_resume 各自只负责准备 graph_input
+    # ==============================================================
+
+    async def _run_graph(
+        self,
+        session_id: str,
+        question: str,
+        graph_input: Any,
+        tool_runs: List[Dict[str, Any]],
+        skill_msgs: Optional[List[BaseMessage]] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        cfg = {"configurable": {"thread_id": session_id},
+               "recursion_limit": RECURSION_LIMIT}
+        skill_msgs = skill_msgs if skill_msgs is not None else []
+        stop = False
+        last_ai_text = ""
+
+        async for chunk in self._compiled.astream(graph_input, config=cfg, stream_mode="updates"):
+            for node_name, update in chunk.items():
+
+                if node_name == "agent":
+                    ai_msg = update["messages"][-1]
+                    text = (ai_msg.content or "").strip()
+                    if text:
+                        last_ai_text = text
+                    for tc in ai_msg.tool_calls:
+                        args = tc.get("args") or {}
+                        tool_runs.append({"name": tc["name"], "input": args,
+                                          "output": None, "status": "running",
+                                          "_call_id": tc.get("id", "")})
+                        yield {"event": "tool_start", "data": {
+                            "name": tc["name"],
+                            "input": _safe_preview(args),
+                            "run_id": tc.get("id", ""),
+                        }}
+
+                elif node_name == "tools":
+                    for tm in update["messages"]:
+                        output = _parse_json_if_possible(tm.content)
+                        _fill_tool_run(tool_runs, tm.name, output,
+                                       getattr(tm, "tool_call_id", ""))
+                        yield {"event": "tool_end", "data": {
+                            "name": tm.name,
+                            "output_preview": _safe_preview(output, 200),
+                        }}
+
+                elif node_name == "skill_check":
+                    matched = update.get("matched_skill")
+                    if matched is not None:
+                        async for ev in self._run_skill_channel(
+                                session_id, question, tool_runs, skill_msgs,
+                                pre_matched_skill=matched):
+                            if ev is _SKILL_DONE:
+                                continue
+                            yield ev
+                        stop = True
+            if stop:
+                break
+
+        snapshot = await self._compiled.aget_state(cfg)
+        if snapshot.interrupts:
+            yield {"event": "interrupt", "data": snapshot.interrupts[0].value}
+            return
+
+        if last_ai_text:
+            yield {"event": "token", "data": {"text": last_ai_text}}
+            yield {"event": "done", "data": {"ai_text": last_ai_text, "tool_runs": tool_runs}}
+        else:
+            yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
+                                             "warning": "max_rounds"}}
+
+    # ==============================================================
+    # 2. 对外入口：首次提问 / resume 审批
     # ==============================================================
 
     async def chat_stream(
@@ -114,9 +187,6 @@ class GraphService:
         question: str,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         await self.ensure_init()
-
-        cfg = {"configurable": {"thread_id": session_id},
-               "recursion_limit": RECURSION_LIMIT}
 
         human_msg = HumanMessage(content=question)
         state: Dict[str, Any] = {
@@ -127,76 +197,46 @@ class GraphService:
 
         tool_runs: List[Dict[str, Any]] = []
         skill_msgs: List[BaseMessage] = []
-        skill_done = False
-        last_ai_text = ""
 
         yield {"event": "welcome", "data": {"session_id": session_id, "question": question}}
 
         try:
-            # 前置 skill 快速通道：命中则直接接管，不进编译图
-            async for ev in self._run_skill_channel(session_id, question, tool_runs,
-                                                    skill_msgs):
+            pre_skill = False
+            async for ev in self._run_skill_channel(session_id, question, tool_runs, skill_msgs):
                 if ev is _SKILL_DONE:
-                    skill_done = True
+                    pre_skill = True
                     continue
                 yield ev
-            pre_skill = skill_done
 
-            stop = False
-            if not skill_done:
-                async for chunk in self._compiled.astream(state, config=cfg, stream_mode="updates"):
-                    for node_name, update in chunk.items():
+            if not pre_skill:
+                async for ev in self._run_graph(session_id, question, state, tool_runs, skill_msgs):
+                    yield ev
 
-                        if node_name == "agent":
-                            ai_msg = update["messages"][-1]
-                            text = (ai_msg.content or "").strip()
-                            if text:
-                                last_ai_text = text
-                            for tc in ai_msg.tool_calls:
-                                args = tc.get("args") or {}
-                                tool_runs.append({"name": tc["name"], "input": args,
-                                                  "output": None, "status": "running",
-                                                  "_call_id": tc.get("id", "")})
-                                yield {"event": "tool_start", "data": {
-                                    "name": tc["name"],
-                                    "input": _safe_preview(args),
-                                    "run_id": tc.get("id", ""),
-                                }}
+            await self._persist_skill_messages(session_id, ([human_msg] if pre_skill else []) + skill_msgs)
 
-                        elif node_name == "tools":
-                            for tm in update["messages"]:
-                                output = _parse_json_if_possible(tm.content)
-                                _fill_tool_run(tool_runs, tm.name, output,
-                                               getattr(tm, "tool_call_id", ""))
-                                yield {"event": "tool_end", "data": {
-                                    "name": tm.name,
-                                    "output_preview": _safe_preview(output, 200),
-                                }}
+        except GraphRecursionError:
+            yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
+                                             "warning": "max_rounds"}}
+        except Exception as exc:
+            yield {"event": "error", "data": {
+                "message": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=5),
+            }}
 
-                        elif node_name == "skill_check":
-                            matched = update.get("matched_skill")
-                            if matched is not None:
-                                async for ev in self._run_skill_channel(
-                                        session_id, question, tool_runs, skill_msgs,
-                                        pre_matched_skill=matched):
-                                    if ev is _SKILL_DONE:
-                                        skill_done = True
-                                        continue
-                                    yield ev
-                                stop = True
-                    if stop:
-                        break  # 先退出图再补写 skill 消息，避免被图后续的 checkpoint 写入遮蔽
+    async def chat_resume(
+        self,
+        session_id: str,
+        decision: str,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        await self.ensure_init()
 
-            if skill_done:
-                to_persist = ([human_msg] if pre_skill else []) + skill_msgs
-                await self._persist_skill_messages(session_id, to_persist)
-                return
-            if last_ai_text:
-                yield {"event": "token", "data": {"text": last_ai_text}}
-                yield {"event": "done", "data": {"ai_text": last_ai_text, "tool_runs": tool_runs}}
-            else:
-                yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
-                                                 "warning": "max_rounds"}}
+        tool_runs: List[Dict[str, Any]] = []
+
+        yield {"event": "welcome", "data": {"session_id": session_id, "resume": decision}}
+
+        try:
+            async for ev in self._run_graph(session_id,"", Command(resume=decision),  tool_runs):
+                yield ev
 
         except GraphRecursionError:
             yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
@@ -281,25 +321,16 @@ class GraphService:
             name = tc["name"]
             args = tc.get("args") or {}
 
-            entry = self._registry.get(name)
-            if entry is not None:
-                definition, _adapter = entry
-                normalized = self._registry.execute(ToolExecutionRequest(
-                    tool_id=name,
-                    parameters=args,
-                    timeout_seconds=definition.timeout_seconds,
-                ))
+            tool = self._tools_by_name.get(name)
+            if tool is None:
+                normalized = normalize_tool_result(
+                    RuntimeError(f"未知工具 '{name}'"), name)
             else:
-                tool = self._tools_by_name.get(name)
-                if tool is None:
-                    normalized = normalize_tool_result(
-                        RuntimeError(f"未知工具 '{name}'"), name)
-                else:
-                    try:
-                        raw = tool.invoke(args)
-                    except Exception as exc:
-                        raw = exc
-                    normalized = normalize_tool_result(raw, name)
+                try:
+                    raw = tool.func(**args)
+                except Exception as exc:
+                    raw = exc
+                normalized = normalize_tool_result(raw, name)
 
             normalized = _sanitize_non_finite(normalized)
             text = json.dumps(normalized, ensure_ascii=False, indent=2, default=str)

@@ -48,9 +48,25 @@ export interface ToolRun {
   name: string
   input: Record<string, any>
   output: any
-  status: 'running' | 'ok' | 'error'
+  status: 'running' | 'ok' | 'error' | 'rejected'
   start_time?: number
   end_time?: number
+}
+
+export interface InterruptToolCall {
+  name: string
+  args: Record<string, any>
+}
+
+export interface InterruptData {
+  question: string
+  tool_calls: InterruptToolCall[]
+}
+
+export interface PendingInterrupt {
+  data: InterruptData
+  sessionId: string
+  status: 'pending' | 'processing'
 }
 
 // 前端下拉框/选项
@@ -70,6 +86,7 @@ export type SseEventType =
   | 'tool_start'
   | 'tool_end'
   | 'token'
+  | 'interrupt'
   | 'done'
   | 'error'
 
@@ -78,6 +95,7 @@ export interface SseEventData {
   data: {
     session_id?: string
     question?: string
+    resume?: string
     name?: string
     input?: any
     output_preview?: any
@@ -87,5 +105,7 @@ export interface SseEventData {
     message?: string
     traceback?: string
     run_id?: string
+    // interrupt 事件专用
+    tool_calls?: InterruptToolCall[]
   }
 }

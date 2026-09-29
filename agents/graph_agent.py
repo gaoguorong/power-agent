@@ -11,8 +11,8 @@ import logging
 import aiomysql
 from langchain_core.messages import AnyMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.mysql.aio import AIOMySQLSaver
 
@@ -22,10 +22,22 @@ from agents.AgentState import AgentState
 
 from config.model_config import SYSTEM_PROMPT
 from config.mysql_config import DATABASE_CONFIG
+from langgraph.types import interrupt,Command
 
 CHECKPOINT_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "checkpoints.db")
 
 LLM = create_llm()
+
+
+def _interrupt(value, config: RunnableConfig):
+    """interrupt() 的 py3.10 兼容包装。
+    langgraph 在 Python < 3.11 下走 astream 异步执行时不会传播 runnable config
+    """
+    token = var_child_runnable_config.set(config)
+    try:
+        return interrupt(value)
+    finally:
+        var_child_runnable_config.reset(token)
 
 _llm_logger = logging.getLogger("llm_io")
 _llm_logger.setLevel(logging.INFO)
@@ -92,11 +104,28 @@ class GraphAgent:
     def inject_session_node(self, state: AgentState, config: RunnableConfig):
         sid = config.get("configurable", {}).get("thread_id", "default")
         last_msg = state["messages"][-1]
-        if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
-            for tc in last_msg.tool_calls:
-                if "args" not in tc:
-                    tc["args"] = {}
-                tc["args"]["session_id"] = sid
+        # 挂起态被插入新输入时最后一条可能不是 AIMessage（没有 tool_calls 属性），
+        # 统一用 getattr 取，避免 AttributeError
+        tool_calls = getattr(last_msg, "tool_calls", None) or []
+        for tc in tool_calls:
+            if "args" not in tc:
+                tc["args"] = {}
+            tc["args"]["session_id"] = sid
+        risky_tools = {"adjust_gen_output","disconnect_line",
+                       "connect_line","load_case","set_load_mw","set_load_scale"}
+        has_risky = any(tc["name"] in risky_tools for tc in tool_calls)
+        if has_risky:
+            decision = _interrupt({
+                "question": "AI计划执行一下操作，是否继续?",
+                "tool_calls":[
+                    {"name": tc["name"], "args": tc["args"]}
+                    for tc in last_msg.tool_calls
+                ],
+            }, config)
+            if decision != "approve":
+                # 拒绝：把 tool_calls 清掉，回 agent 让 AI 换个方案
+                last_msg.tool_calls = []
+                last_msg.content = "用户拒绝了该操作，请重新考虑方案。"
         return {"messages": state["messages"]}
 
     def should_continue(self, state: AgentState):

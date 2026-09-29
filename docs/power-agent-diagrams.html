@@ -179,8 +179,13 @@ graph TB
 
     subgraph SKILL["🎯 Skill 技能层 (声明式编排)"]
         direction TB
-        SD["<b>skill_def.py</b><br/>OVERLOAD_RELIEF_SKILL<br/>（断线后消过载闭环）"]
-        SR["<b>skill_runner.py</b><br/>执行引擎 · 确定性 steps<br/>generator 驱动"]
+        RTR["<b>SkillRouter.py</b><br/>router 单例<br/>match / match_after_llm"]
+        DEF["<b>skill_def.py</b><br/>SkillDef<br/>triggers / pre_action_triggers<br/>state_ready（@register_state_ready）"]
+        CAT["<b>skill_catalog.py</b><br/>OVERLOAD_RELIEF_SKILL<br/>steps: tool / check / step_fn / loop / end"]
+        RUN["<b>skill_runner.py</b><br/>steps 解释器<br/>_ReliefContext 跨轮状态"]
+        RTR --> DEF
+        RTR --> CAT
+        CAT --> RUN
     end
 
     subgraph EXEC["📦 执行器层"]
@@ -240,46 +245,37 @@ graph TB
 graph TB
     START([START]) --> AGENT["<b>agent</b><br/>调用 LLM + tools<br/>（注入 System Prompt）"]
 
-    AGENT --> DECIDE{"LLM 输出<br/>是否包含 tool_calls?"}
+    AGENT --> DECIDE{"should_continue<br/>AIMessage 含<br/>tool_calls?"}
 
     DECIDE -- "是（Function Calling）" --> INJECT["<b>inject_session</b><br/>给 tool_calls.args<br/>注入 session_id"]
-
     INJECT --> TOOLS["<b>tools</b><br/>批量执行工具<br/>→ ToolMessage[]"]
+    TOOLS --> SKILL_CHECK
 
-    TOOLS --> SKILL_CHECK["<b>skill_check</b><br/>后置匹配 Skill<br/>（match_skill_after_llm）"]
+    DECIDE -- "否（直接回答）" --> SKILL_CHECK["<b>skill_check</b><br/>SkillRouter.match_after_llm<br/>意图 + 电网状态双重检查"]
 
-    SKILL_CHECK --> ROUTE{"是否命中<br/>matched_skill?"}
+    SKILL_CHECK --> ROUTE{"route_after_skill<br/>state.skill_route?"}
 
-    ROUTE -- "否" --> AGENT
-    ROUTE -- "是（触发 Skill 旁路）" --> SKILL["<b>Skill 旁路</b><br/>run_overload_relief()<br/>发电机灵敏度再调度<br/>（确定性闭环）"]
-
-    SKILL --> END_SKILL([END])
-
-    DECIDE -- "否（直接回答）" --> FINAL_CHECK{"LLM 直接回答后<br/>后置检查 Skill?"}
-    FINAL_CHECK -- "命中 Skill" --> SKILL
-    FINAL_CHECK -- "不命中" --> END([END])
+    ROUTE -- '"agent"（未命中 Skill<br/>继续对话）' --> AGENT
+    ROUTE -- '"end"（命中 Skill<br/>或对话结束）' --> END([END])
 
     style START fill:#c8e6c9,stroke:#2e7d32,stroke-width:3px
     style END fill:#ffcdd2,stroke:#c62828,stroke-width:3px
-    style END_SKILL fill:#ffcdd2,stroke:#c62828,stroke-width:3px
     style AGENT fill:#f8bbd0,stroke:#c2185b,stroke-width:3px
     style INJECT fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
     style TOOLS fill:#f3e5f5,stroke:#7b1fa2,stroke-width:3px
-    style SKILL_CHECK fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style SKILL fill:#b2ebf2,stroke:#006064,stroke-width:4px
+    style SKILL_CHECK fill:#e0f7fa,stroke:#00838f,stroke-width:3px
     style DECIDE fill:#fff9c4,stroke:#f9a825,stroke-width:3px
     style ROUTE fill:#fff9c4,stroke:#f9a825,stroke-width:3px
-    style FINAL_CHECK fill:#fff9c4,stroke:#f9a825,stroke-width:3px
         </div>
 
         <div class="legend">
             <h3>📋 节点说明</h3>
             <div class="legend-item"><span class="legend-color" style="background:#f8bbd0"></span><b>agent</b> — 调用 LLM（绑定 17 个 @tool），是整个状态机的核心驱动节点</div>
             <div class="legend-item"><span class="legend-color" style="background:#fff3e0"></span><b>inject_session</b> — 工具执行前给每个 tool_call.args 注入 session_id，实现多会话隔离</div>
-            <div class="legend-item"><span class="legend-color" style="background:#f3e5f5"></span><b>tools</b> — 批量执行 LLM 决定调用的工具，由 GraphService._tools_node 实现</div>
-            <div class="legend-item"><span class="legend-color" style="background:#e0f7fa"></span><b>skill_check</b> — 工具执行后检查是否需要触发 Skill 旁路（如断线后自动消过载）</div>
-            <div class="legend-item"><span class="legend-color" style="background:#b2ebf2"></span><b>Skill 旁路</b> — 声明式 steps 驱动的确定性闭环，不走 LLM，过程完全可审计</div>
-            <div class="legend-item"><span class="legend-color" style="background:#fff9c4"></span><b>菱形判断</b> — 条件边，决定走哪条路径</div>
+            <div class="legend-item"><span class="legend-color" style="background:#f3e5f5"></span><b>tools</b> — 批量执行 LLM 决定调用的工具，由 GraphService._tools_node 实现（注册表优先，回退 ALL_TOOLS）</div>
+            <div class="legend-item"><span class="legend-color" style="background:#e0f7fa"></span><b>skill_check</b> — 统一后置检查节点（LLM 出 tool_calls / 直接回答 两种路径都会走到这里），调用 SkillRouter.match_after_llm 做意图 + 电网状态双重判定，命中则写 matched_skill 并把 skill_route 置为 end</div>
+            <div class="legend-item"><span class="legend-color" style="background:#fff9c4"></span><b>菱形判断</b> — should_continue 决定走 tools 还是直接 skill_check；route_after_skill 读取 state.skill_route 决定回到 agent 还是结束</div>
+            <div class="legend-item"><span class="legend-color" style="background:#b2ebf2"></span><b>前置 Skill 通道（不在图内）</b> — GraphService.chat_stream 里在进入编译图前先调 SkillRouter.match()，复合意图（含断线/切负荷/投运等 pre_action_triggers 词）不抢跑，纯意图命中则直接接管</div>
         </div>
     </div>
 
@@ -294,7 +290,8 @@ sequenceDiagram
     participant FE as 🖥️ 前端 SPA
     participant CC as chat_controller
     participant GS as GraphService
-    participant Skill as Skill 引擎
+    participant Router as SkillRouter
+    participant Runner as skill_runner
     participant GA as GraphAgent
     participant LLM as 🤖 LLM
     participant Tools as 🔧 pandapower
@@ -311,18 +308,19 @@ sequenceDiagram
     GS-->>FE: 📡 SSE: event=welcome
     
     rect rgb(230, 245, 255)
-        Note over GS,Skill: 🔍 Skill 前置拦截检查
-        GS->>Skill: match_skill(question)
-        alt 命中 Skill（如"断线消除过载"复合意图）
-            Skill-->>GS: 返回 skill 定义
-            GS->>Skill: run_overload_relief(gt, skill)
-            Skill-->>GS: yield tool/final 事件流
+        Note over GS,Router: 🔍 前置 Skill 快速通道（纯意图）
+        GS->>Router: match(question)
+        alt 纯意图命中 且 电网已加载<br/>（不含 pre_action_triggers 复合意图）
+            Router-->>GS: 返回 skill 定义
+            GS->>Runner: run_overload_relief(gt, skill)
+            Runner-->>GS: yield tool/final 事件流
             GS-->>FE: 📡 SSE: tool_start / tool_end × N
             GS-->>FE: 📡 SSE: token + done
-        else 不命中 → 走 LangGraph 正常流程
+            GS->>MySQL: aupdate_state 补写 checkpoint<br/>（skill 旁路脱离编译图）
+        else 未命中 / 复合意图 / 电网未加载
             GS->>GA: compiled.astream(state, stream_mode=updates)
             rect rgb(255, 240, 245)
-                Note over GA,LLM: 🔄 Graph 循环：agent → tools → skill_check → agent
+                Note over GA,LLM: 🔄 Graph 循环：agent → inject_session → tools → skill_check → (agent | end)
                 GA->>LLM: invoke(messages + SystemPrompt)
                 LLM-->>GA: AIMessage（含 tool_calls 或直接回答）
                 
@@ -331,15 +329,20 @@ sequenceDiagram
                     Tools-->>GA: ToolMessage（含 pandapower 计算结果）
                     GA-->>GS: yield node="tools" update
                     GS-->>FE: 📡 SSE: tool_start / tool_end
-                    GS->>Skill: skill_check 后置匹配
-                    alt 后置命中 Skill
-                        GS->>Skill: run_overload_relief()
-                        Skill-->>FE: 📡 SSE: tool_start/end + token + done
-                    else 继续循环
+                    GA->>Router: skill_check → match_after_llm(question, gt)
+                    Router-->>GA: matched_skill / None
+                    alt 命中 Skill（意图 + 电网已加载 + state_ready）
+                        GA-->>GS: skill_route="end"
+                        GS->>Runner: run_overload_relief()
+                        Runner-->>FE: 📡 SSE: tool_start/end + token + done
+                        GS->>MySQL: aupdate_state 补写 checkpoint
+                    else 未命中
                         GA->>LLM: 再调 LLM（工具结果作为上下文）
                     end
                 else LLM 直接输出最终回答
                     GA-->>GS: yield node="agent" 最终文本
+                    GA->>Router: skill_check → match_after_llm
+                    Router-->>GA: 未命中（回答型问题）
                     GS-->>FE: 📡 SSE: token（打字机效果）
                 end
             end
@@ -348,7 +351,7 @@ sequenceDiagram
     
     GS-->>FE: 📡 SSE: event=done
     CC->>MySQL: 更新 last_message / grid_meta / message_count
-    GS->>MySQL: AIOMySQLSaver.checkpoint（消息历史自动持久化）
+    GS->>MySQL: AIOMySQLSaver.checkpoint（图内路径自动持久化）
     FE->>User: 渲染完整对话 + 工具调用过程
         </div>
     </div>
@@ -356,61 +359,74 @@ sequenceDiagram
     <!-- ============ Skill 消过载流程 ============ -->
     <div class="diagram-section">
         <div class="diagram-title">四、Skill 消过载再调度闭环流程图</div>
-        <div class="diagram-desc">OVERLOAD_RELIEF_SKILL 声明式 steps 的执行流程，发电机灵敏度→再调度迭代直到全部线路回到限值以内</div>
+        <div class="diagram-desc">OVERLOAD_RELIEF_SKILL 声明式 steps 由 skill_runner 通用解释器执行；数值密集的单轮再调度封装在 relief_round step_fn 内</div>
 
         <div class="mermaid">
 graph TB
-    START([Skill 被触发]) --> CHECK_NET{"电网已加载?<br/>gt.net != None?"}
-    CHECK_NET -- "否" --> ABORT["放弃 Skill<br/>yield aborted=True<br/>交回上层回退 LLM 先建网"]
-    CHECK_NET -- "是" --> INIT["初始化 _ReliefContext<br/>记录初始轮数=0 / best_max=0"]
+    START([Skill 被触发<br/>run_overload_relief gt skill]) --> PRE{"gt.net<br/>已加载?"}
+    PRE -- "否" --> ABORT["yield kind=final<br/>aborted=True<br/>交回上层回退 LLM 先建网"]
+    PRE -- "是" --> CTX["构造 _ReliefContext<br/>round_no / history / initial_max / best_max"]
 
-    INIT --> PF["<b>Step 1</b><br/>run_ac_power_flow<br/>跑基准潮流<br/>save → ctx.pf"]
+    CTX --> LOOP{{steps 解释器循环<br/>budget = max_iterations × 8 + 30}}
 
-    PF --> OV["<b>Step 2</b><br/>get_line_overload_summary<br/>threshold=@loading_limit<br/>save → ctx.ov"]
+    subgraph STEPS["skill_catalog.OVERLOAD_RELIEF_SKILL.steps"]
+        direction TB
+        S1["tool: run_ac_power_flow → save=pf"]
+        S2["tool: get_line_overload_summary<br/>params.threshold = @loading_limit_percent → save=ov"]
+        S3["check: overload_free?<br/>then → end<br/>else → step_fn relief_round"]
+        S4["check: relief_finished?<br/>then → end<br/>else → loop to step 2"]
+    end
 
-    OV --> CHECK_FREE{"<b>Check</b><br/>overload_free?<br/>基准潮流收敛?<br/>有过载线路?"}
+    LOOP --> S1 --> S2 --> S3
+    S3 -- "end（无过载 / 潮流不收敛 / 过载检查失败）" --> FINAL_END
+    S3 -- "step_fn relief_round" --> RELIEF
+    RELIEF --> S4
+    S4 -- "loop to 2" --> LOOP
+    S4 -- "end" --> FINAL_END
 
-    CHECK_FREE -- "潮流不收敛" --> FAIL1["结束<br/>无法执行再调度"]
-    CHECK_FREE -- "无过载线路" --> SUCCESS0["结束<br/>无需再调度<br/>记录当前最大负载率"]
-    CHECK_FREE -- "存在过载" --> RELIEF["<b>relief_round</b><br/>执行一轮机组再调度"]
+    subgraph RELIEF["📦 step_fn: relief_round 单轮再调度"]
+        direction TB
+        R0["轮数上限兜底<br/>round_no ≥ max_iterations → 定论"]
+        R1["锁定目标线路<br/>→ 当前最严重过载线路"]
+        R2["calc_gen_sensitivity<br/>机组灵敏度（delta_mw 扰动）"]
+        R3["筛选候选机组<br/>有效方向 × 可调容量 = 转移能力"]
+        R4["按转移能力排序<br/>取 top_n_gens 默认 2 台"]
+        R5["计算加权步长<br/>need / abs(sens) × cap / total_cap × 阻尼 0.9"]
+        R6["adjust_gen_output × N"]
+        R7["run_ac_power_flow"]
+        R7C{"收敛?"}
+        R7C -- "否" --> ROLLBACK_PF["回退本轮机组调整<br/>_rollback → 定论结束"]
+        R7C -- "是" --> R8["get_line_overload_summary<br/>skip_runpp=True"]
+        R9{"over_count = 0?"}
+        R9 -- "是 ✅" --> SUCCESS["_finish success=True<br/>写 ctx.final"]
+        R9 -- "否" --> R10{"最大负载率<br/>比上轮恶化?"}
+        R10 -- "是 ⚠️" --> ROLLBACK_WORSE["_rollback → 定论<br/>诚实告知再调度无解"]
+        R10 -- "否" --> R11{"连续 N 轮<br/>无改善?"}
+        R11 -- "是" --> NO_IMPROVE["写 ctx.final<br/>说明改善幅度"]
+        R11 -- "否" --> R12["更新 best_max / no_improve"]
+        R12 --> BACK[("返回 relief_round 末尾<br/>（不写 final，让外层 loop 再来一轮）")]
+        R0 --> FINAL
+        ROLLBACK_PF --> FINAL
+        SUCCESS --> FINAL
+        ROLLBACK_WORSE --> FINAL
+        NO_IMPROVE --> FINAL
+        FINAL[("写 ctx.final → 解释器 check(relief_finished)=True")]
+    end
 
-    RELIEF --> LOCK["锁定目标线路<br/>→ 当前最严重的过载线路"]
-    LOCK --> SENS["calc_gen_sensitivity<br/>计算机组对目标线路的灵敏度<br/>扰动步长=delta_mw"]
-    SENS --> CANDIDATE["筛选候选机组<br/>有效方向=能降低目标线路潮流<br/>转移能力=|灵敏度|×可调容量<br/>按转移能力排序"]
-    CANDIDATE --> PICK["选 Top N 台<br/>（默认 top_n_gens=2）"]
-    PICK --> CALC_STEP["计算步长<br/>need = 把目标线路压回限值需削减的 MW<br/>按转移能力加权分配<br/>阻尼 0.9 防过冲"]
-    CALC_STEP --> ADJUST["adjust_gen_output × N<br/>逐台调整机组出力"]
-    ADJUST --> RE_PF["run_ac_power_flow<br/>重算潮流"]
-
-    RE_PF --> CONVERGED{"收敛?"}
-    CONVERGED -- "否" --> ROLLBACK1["回退本轮调整<br/>反向调回机组出力<br/>重算潮流恢复原状<br/>结束（需用户手动干预）"]
-    CONVERGED -- "是" --> RE_OV["get_line_overload_summary<br/>复查过载情况"]
-
-    RE_OV --> RELIEF_RESULT{"过载线路数=0?"}
-    RELIEF_RESULT -- "是 ✅" --> SUCCESS["🎉 成功<br/>所有线路已回到限值以内<br/>记录总轮数和各轮详情"]
-    RELIEF_RESULT -- "否" --> CHECK_WORSE{"<b>最大负载率</b><br/>比上轮恶化?"}
-    CHECK_WORSE -- "是 ⚠️" --> ROLLBACK2["回退本轮调整<br/>结束（说明仅靠机组再调度无解）"]
-    CHECK_WORSE -- "否" --> CHECK_NO_IMPROVE{"连续 N 轮<br/>无改善?"}
-    CHECK_NO_IMPROVE -- "是" --> STOP["停止<br/>判定调不动<br/>诚实告知现状"]
-    CHECK_NO_IMPROVE -- "否" --> CHECK_MAX_ROUNDS{"达到最大轮数?<br/>max_iterations=10?"}
-    CHECK_MAX_ROUNDS -- "是" --> LIMIT["达到轮数上限<br/>结束（兜底防死循环）"]
-    CHECK_MAX_ROUNDS -- "否" --> RELIEF
+    FINAL_END["yield kind=final<br/>_render_summary 拼接过程回顾<br/>再调度变化 + 每轮详情"] --> DONE([结束])
 
     style START fill:#c8e6c9,stroke:#2e7d32,stroke-width:3px
     style ABORT fill:#ffcdd2,stroke:#c62828,stroke-width:2px
-    style FAIL1 fill:#ffcdd2,stroke:#c62828,stroke-width:2px
-    style SUCCESS0 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
-    style SUCCESS fill:#a5d6a7,stroke:#1b5e20,stroke-width:3px
-    style ROLLBACK1 fill:#ffcdd2,stroke:#c62828,stroke-width:2px
-    style ROLLBACK2 fill:#ffcdd2,stroke:#c62828,stroke-width:2px
-    style STOP fill:#ffe0b2,stroke:#e65100,stroke-width:2px
-    style LIMIT fill:#ffe0b2,stroke:#e65100,stroke-width:2px
-    style PF fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style OV fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style FINAL_END fill:#a5d6a7,stroke:#1b5e20,stroke-width:3px
+    style DONE fill:#ffcdd2,stroke:#c62828,stroke-width:3px
+    style CTX fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style LOOP fill:#fff9c4,stroke:#f9a825,stroke-width:3px
+    style STEPS fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
     style RELIEF fill:#fff3e0,stroke:#ef6c00,stroke-width:3px
-    style SENS fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style ADJUST fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style RE_PF fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style ROLLBACK_PF fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    style ROLLBACK_WORSE fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    style NO_IMPROVE fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+    style SUCCESS fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
         </div>
     </div>
 
