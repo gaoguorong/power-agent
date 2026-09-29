@@ -371,6 +371,7 @@ export const useSessionStore = defineStore('session', {
             output: null,
             status: 'running',
             start_time: Date.now(),
+            _call_id: payload?.run_id || '',
           }
           assistantMsg.tool_runs.push(tr)
           this.liveToolRuns[name] = tr
@@ -406,7 +407,40 @@ export const useSessionStore = defineStore('session', {
             assistantMsg.pending_tokens = finalText
           }
           if (payload?.tool_runs?.length) {
-            assistantMsg.tool_runs = [...payload.tool_runs]
+            // 合并而非整体替换：interrupt 之前的工具块（如走过人工审批的
+            // set_load_scale）只存在于实时列表里，resume 流的 done 载荷没有它，
+            // 直接替换会把已批准执行的工具弄丢
+            const merged = [...(assistantMsg.tool_runs || [])]
+            const claimed = merged.map(() => false)
+            const normInput = (v: any): string => {
+              if (v == null) return ''
+              if (typeof v === 'string') {
+                try {
+                  return JSON.stringify(JSON.parse(v))
+                } catch {
+                  return v
+                }
+              }
+              return JSON.stringify(v)
+            }
+            for (const run of payload.tool_runs as ToolRun[]) {
+              const idx = merged.findIndex((t, i) => {
+                if (claimed[i] || t.name !== run.name) return false
+                if (run._call_id && t._call_id) return t._call_id === run._call_id
+                return normInput(t.input) === normInput(run.input)
+              })
+              if (idx >= 0) {
+                claimed[idx] = true
+                merged[idx] = {
+                  ...merged[idx],
+                  output: run.output ?? merged[idx].output,
+                  status: run.status || merged[idx].status,
+                }
+              } else {
+                merged.push(run)
+              }
+            }
+            assistantMsg.tool_runs = merged
           }
           break
         }

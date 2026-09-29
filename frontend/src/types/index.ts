@@ -51,6 +51,8 @@ export interface ToolRun {
   status: 'running' | 'ok' | 'error' | 'rejected'
   start_time?: number
   end_time?: number
+  // 后端 tool_call_id，用于 done 事件合并时精确配对
+  _call_id?: string
 }
 
 export interface InterruptToolCall {

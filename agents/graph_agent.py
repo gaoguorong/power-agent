@@ -116,7 +116,7 @@ class GraphAgent:
         has_risky = any(tc["name"] in risky_tools for tc in tool_calls)
         if has_risky:
             decision = _interrupt({
-                "question": "AI计划执行一下操作，是否继续?",
+                "question": "计划执行一下操作，是否继续?",
                 "tool_calls":[
                     {"name": tc["name"], "args": tc["args"]}
                     for tc in last_msg.tool_calls
