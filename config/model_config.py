@@ -127,7 +127,7 @@ ACTIVE_LLM = "maas"
 LLM_CONFIG_MAAS = {
     "api_key": "sk-ws-H.PDYRHXM.DoWE.MEUCIGTDuhZXzW-hQfhhGlFMPO7njFCMPJWuSiJM9ck8arCEAiEArwO3gYdRLqcPL5DvR8kSC62c9o-Q8TKpjnVB7aN6XUk",
     "api_url": "https://llm-bs9b0iaovdezx09s.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen3.7-flash",
+    "model": "qwen3.8-2.4t-a95b",
     "temperature": 0.1,
     "max_tokens": 2048,
     "timeout": 60,
@@ -184,9 +184,39 @@ SYSTEM_PROMPT = (
     "· 用户说「刚才/之前/继续」→ 复用前面的电网与结果，不必重新 create_test_grid。"
     "· 用户明确说新电网类型（如之前case30，现在说换57节点）→ 调 create_test_grid(新类型) 覆盖即可。"
     ""
-    "【6. 输出要求】"
+    "【6. 前瞻调度（LASCH 系统）—— 大前提：用户必须明确提到「前瞻调度」四个字才触发】"
+    "· LASCH 是独立的电力市场前瞻调度系统，负责：AI 场景生成 + SCUC 安全约束机组组合优化。"
+    "· 与 pandapower 原生工具的边界："
+    "  → 当前时刻的潮流/N-1/短路/过载/电压越限 → 用 pandapower（run_ac_power_flow 等）"
+    "  → 未来时段的场景分析/机组组合/备用/负荷或新能源扰动下的前瞻调度 → 用 LASCH"
+    "· 触发关键词（必须同时满足 ① 包含「前瞻调度」四个字，② 有未来时段或扰动描述）："
+    "  「前瞻调度 + 场景生成」、「前瞻调度 + 机组组合」、「前瞻调度 + 备用分析」、"
+    "  「前瞻调度 + 负荷上调/下调 X MW」、「前瞻调度 + 新能源超发/降发」。"
+    "  如果用户只说「场景生成」不说「前瞻调度」，反问确认意图。"
+    "· LASCH 四步固定流程，必须严格按序调用："
+    "  第1步 — lasch_health_check：先确认后台可用，不可用直接告诉用户"
+    "  第2步 — lasch_submit_workflow：提交任务（必填参数 time_window_start/time_window_end，"
+    "    格式 YYYY-MM-DD HH:MM:SS；用户没给明确时间窗口必须反问）"
+    "    默认值：scenario_count=3、mode=scenario_then_optimize、solver_time_limit_sec=300。"
+    "  第3步 — lasch_wait_workflow：【阻塞等待，代码层自动轮询，不要手动循环调查询】"
+    "    最长等600秒，HiGHS 求解慢属正常，不要提前放弃。"
+    "  第4步 — lasch_get_workflow_result：取完整结果。解读时重点关注："
+    "    (a) 概率加权的系统总备用裕度；(b) 高风险场景（概率高且断面/备用紧张）；"
+    "    (c) 机组出力调整建议。"
+    "· LASCH 失败时的错误解读："
+    "  → RuntimeError 含「MemoryError」：用户机器内存不够，建议减小 scenario_count 或缩短时间窗口"
+    "  → RuntimeError 含「Time limit reached」：HiGHS 求解超时，建议在 requirement 中增大 solver_time_limit_sec"
+    "  → CoptError 含「LICENSE」：COPT 商业 license 无效/不存在，当前应使用 highs 模式后台"
+    "· lasch_query_status 仅用于超时后的补查，正常流程用 lasch_wait_workflow 自动等完。"
+    ""
+    "【7. 输出要求】"
     "· 工具报错时把错误信息清晰告知，不要瞎编。"
     "· 最终回答用简洁中文总结关键数据，禁止原样粘贴大段JSON。"
+    "· LASCH 前瞻调度结果输出时，严格按以下固定顺序组织内容，"
+    "  分析结论必须放在【最最开头】，禁止调换顺序："
+    "  🎯 第一块 —— 分析结论(直接给答案！必须包含：备用裕度范围(MW)、风险预警和风险关注(具体时段的机组或负荷数据)、整体安全评估(安全/不安全))"
+    "  📊 第二块 —— 关键指标摘要(任务状态、场景数量与概率、分析重点等元信息)"
+    "  📈 第三块 —— 详细需求曲线 / 数据表(支撑材料，放最后)"
 )
 
 # 服务配置
@@ -198,4 +228,3 @@ SERVER_CONFIG = {
         "http://127.0.0.1:5000",
     ],
 }
-

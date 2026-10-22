@@ -1,5 +1,6 @@
 import json
 import asyncio
+import logging
 import traceback
 from typing import Any, Dict, List, Optional, AsyncGenerator
 
@@ -8,7 +9,6 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from agents.graph_agent import GraphAgent
-from executors.registry import build_default_registry
 from schemas.tool_result import normalize_tool_result
 from tools import langchain_tool
 from tools.langchain_tool import ALL_TOOLS
@@ -20,6 +20,7 @@ from .graph_util import (_safe_preview, _sanitize_non_finite, _parse_json_if_pos
 
 RECURSION_LIMIT = 45
 _SKILL_DONE = object()
+_logger = logging.getLogger("graph_service")
 
 class GraphService:
 
@@ -39,7 +40,6 @@ class GraphService:
         self._compiled = None
         self._checkpointer = None
         self._tools_by_name = {t.name: t for t in ALL_TOOLS}
-        self._registry = build_default_registry()
         self._initialized = False
         self._init_lock = asyncio.Lock()
 
@@ -218,6 +218,7 @@ class GraphService:
             yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
                                              "warning": "max_rounds"}}
         except Exception as exc:
+            _logger.exception("chat_stream 处理异常")
             yield {"event": "error", "data": {
                 "message": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(limit=5),
@@ -242,6 +243,7 @@ class GraphService:
             yield {"event": "done", "data": {"ai_text": "", "tool_runs": tool_runs,
                                              "warning": "max_rounds"}}
         except Exception as exc:
+            _logger.exception("chat_resume 处理异常")
             yield {"event": "error", "data": {
                 "message": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(limit=5),
@@ -327,8 +329,14 @@ class GraphService:
                     RuntimeError(f"未知工具 '{name}'"), name)
             else:
                 try:
-                    raw = tool.func(**args)
+                    if hasattr(tool, "invoke"):
+                        raw = tool.invoke(args)
+                    elif hasattr(tool, "func") and callable(tool.func):
+                        raw = tool.func(**args)
+                    else:
+                        raw = tool(**args)
                 except Exception as exc:
+                    _logger.error("工具 %s 执行异常: %s\n%s", name, exc, traceback.format_exc())
                     raw = exc
                 normalized = normalize_tool_result(raw, name)
 

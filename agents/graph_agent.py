@@ -5,7 +5,6 @@ GraphAgent：LangGraph 状态机定义（agent → inject_session → tools → 
 
 演示：python -m agents.graph_agent
 """
-import os
 import asyncio
 import logging
 import aiomysql
@@ -24,7 +23,7 @@ from config.model_config import SYSTEM_PROMPT
 from config.mysql_config import DATABASE_CONFIG
 from langgraph.types import interrupt,Command
 
-CHECKPOINT_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "checkpoints.db")
+from config.log_config import setup_logging
 
 LLM = create_llm()
 
@@ -39,17 +38,38 @@ def _interrupt(value, config: RunnableConfig):
     finally:
         var_child_runnable_config.reset(token)
 
+# 【修改 2026-10-22】日志配置已集中到 config/log_config.py（main.py 启动时装配），
+# 这里只按名称取记录器，不感知日志文件路径与滚动策略；内容截断240字。
 _llm_logger = logging.getLogger("llm_io")
-_llm_logger.setLevel(logging.INFO)
-if not _llm_logger.handlers:
-    os.makedirs("data", exist_ok=True)
-    _fh = logging.FileHandler("data/llm_io.log", encoding="utf-8")
-    _fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-    _llm_logger.addHandler(_fh)
-    _llm_logger.propagate = False
 
 
 class GraphAgent:
+
+    @staticmethod
+    def _preview(value: str) -> str:
+        compact = " ".join(value.split())
+        return compact[:240] + ("..." if len(compact) > 240 else "")
+
+    # 【新增 2026-10-22】作用：把LangChain消息类型翻译成中文标签（用户/模型/工具结果），提高日志可读性
+    @staticmethod
+    def _role_label(message) -> str:
+        labels = {"HumanMessage": "用户", "AIMessage": "模型", "ToolMessage": "工具结果"}
+        return labels.get(type(message).__name__, type(message).__name__) if message else "无"
+
+    # 【新增 2026-10-22】作用：把模型的工具调用压成一行可读文本（最多显示3个调用，总长240字截断）
+    @staticmethod
+    def _format_tool_calls(tool_calls) -> str:
+        parts = []
+        for item in (tool_calls or [])[:3]:
+            args = ", ".join(f"{key}={value}" for key, value in (item.get("args") or {}).items())
+            parts.append(f"{item.get('name', 'unknown')}({args})")
+        text = ", ".join(parts) or "无"
+        return text[:240] + ("..." if len(text) > 240 else "")
+
+    @staticmethod
+    def route_after_skill(state: "AgentState"):
+        route = state.get("skill_route")
+        return END if route == "end" else route
 
     def __init__(self, tools_node, skill_check_node):
         self.llm_with_tools = LLM.bind_tools(ALL_TOOLS, tool_choice="auto", strict=True)
@@ -96,9 +116,22 @@ class GraphAgent:
     def agent_node(self, state: AgentState):
         messages_with_sys = [("system", SYSTEM_PROMPT)] + state["messages"]
         sid = state.get("session_id", "default")
-        _llm_logger.info("[INPUT ] session=%s | %s", sid, messages_with_sys)
+        latest_message = state["messages"][-1] if state["messages"] else None
+        latest_text = str(getattr(latest_message, "content", ""))
+        # 【修改 2026-10-22】调用前日志：单行记 会话ID/消息数/消息来源(用户/模型/工具结果)/内容预览
+        _llm_logger.info(
+            "[输入] session=%s | 消息数=%d | %s: %s",
+            sid, len(state["messages"]), self._role_label(latest_message),
+            self._preview(latest_text),
+        )
         response = self.llm_with_tools.invoke(messages_with_sys)
-        _llm_logger.info("[OUTPUT] session=%s | %s", sid, response)
+        response_text = str(getattr(response, "content", ""))
+        # 【修改 2026-10-22】调用后日志：单行记 会话ID/模型决定调用的工具及参数/回复预览
+        _llm_logger.info(
+            "[输出] session=%s | 调用工具: %s | 回复: %s",
+            sid, self._format_tool_calls(getattr(response, "tool_calls", None)),
+            self._preview(response_text),
+        )
         return {"messages": [response]}
 
     def inject_session_node(self, state: AgentState, config: RunnableConfig):
@@ -134,12 +167,11 @@ class GraphAgent:
             return "inject_session"
         return "skill_check"
 
-    @staticmethod
-    def route_after_skill(state: "AgentState"):
-        route = state.get("skill_route")
-        return END if route == "end" else route
+
 
 if __name__ == "__main__":
+
+    setup_logging()  # 独立运行演示时自行装配日志
     cfg_zhangsan = {"configurable": {"thread_id": "sess-zhangsan-demo-001"}}
     cfg_lisi     = {"configurable": {"thread_id": "sess-lisi-demo-001"}}
 

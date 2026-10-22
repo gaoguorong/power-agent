@@ -1,6 +1,7 @@
 from langchain_core.tools import tool
 from typing import Dict, List, Optional
 from tools.grid_tools import GridTools
+from tools.lasch_tools import LASCH_TOOLS
 
 _sessions: Dict[str, GridTools] = {}
 
@@ -363,4 +364,4 @@ ATOMIC_TOOLS = [
     adjust_gen_output,
 ]
 
-ALL_TOOLS = ATOMIC_TOOLS
+ALL_TOOLS = ATOMIC_TOOLS + LASCH_TOOLS

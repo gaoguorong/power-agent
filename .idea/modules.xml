@@ -2,6 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file://$PROJECT_DIR$/../../大模型开发/LASCH_GS_STANDALONE/.idea/LASCH_GS_STANDALONE.iml" filepath="$PROJECT_DIR$/../../大模型开发/LASCH_GS_STANDALONE/.idea/LASCH_GS_STANDALONE.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/power-agent.iml" filepath="$PROJECT_DIR$/.idea/power-agent.iml" />
     </modules>
   </component>

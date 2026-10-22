@@ -21,7 +21,14 @@ FastAPI 服务主入口（组合根）
     Swagger API文档： http://localhost:8000/docs
     ReDoc 文档：      http://localhost:8000/redoc
 """
-import traceback
+import logging
+
+# ---------- 全局日志：策略集中在 config/log_config.py，这里只负责启动装配 ----------
+# 【修改 2026-10-22】app.log 配置收进 config/log_config.py；原注释"每次启动覆盖"有误，实际为追加+滚动
+from config.log_config import setup_logging
+
+setup_logging()
+_logger = logging.getLogger("app")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,54 +58,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ====================================================================
 # 2. 启动时做的事：建表 + 预热 GraphAgent（避免第一次请求很慢）
 # ====================================================================
 @app.on_event("startup")
 async def on_startup():
     """服务启动时执行一次"""
-    print("=" * 60)
-    print("🚀 正在启动电网分析智能体服务...")
+    _logger.info("=" * 60)
+    _logger.info("🚀 正在启动电网分析智能体服务...")
 
     # --- 2.1 自动建 MySQL 表（如果还没建） ---
     try:
         await create_all_tables()
-        print("✅ MySQL 会话表已就绪")
+        _logger.info("✅ MySQL 会话表已就绪")
     except Exception as exc:
-        print(f"⚠️  MySQL 初始化失败：{exc}")
-        print("   请检查 .env 里的 MYSQL_URL 是否正确，MySQL 服务是否启动")
+        _logger.error(f"⚠️  MySQL 初始化失败：{exc}")
+        _logger.error("   请检查 .env 里的 MYSQL_URL 是否正确，MySQL 服务是否启动")
 
     # --- 2.2 预热 GraphAgent（加载 LLM + AIOMySQLSaver + 工具） ---
     try:
         await GraphService.get_instance().ensure_init()
-        print("✅ GraphAgent 已就绪（消息历史由 AIOMySQLSaver 持久化）")
+        _logger.info("✅ GraphAgent 已就绪（消息历史由 AIOMySQLSaver 持久化）")
     except Exception as exc:
 
-        print(f"⚠️  GraphAgent 初始化失败：{exc}")
-        traceback.print_exc(limit=4)
+        _logger.error(f"⚠️  GraphAgent 初始化失败：{exc}")
 
     # --- 2.3 检查 LLM API Key 有没有填 ---
     if not LLM_CONFIG.get("api_key"):
-        print("⚠️  警告：未设置 LLM_API_KEY 环境变量，LLM 功能将不可用")
+        _logger.warning("⚠️  警告：未设置 LLM_API_KEY 环境变量，LLM 功能将不可用")
     else:
-        print(f"✅ LLM 已配置：模型={LLM_CONFIG.get('model')}")
+        _logger.info(f"✅ LLM 已配置：模型={LLM_CONFIG.get('model')}")
 
-    print(f"🌐 服务地址：http://{SERVER_CONFIG['host']}:{SERVER_CONFIG['port']}")
-    print(f"📖 Swagger文档：http://localhost:{SERVER_CONFIG['port']}/docs")
-    print("=" * 60)
-
+    _logger.info(f"🌐 服务地址：http://{SERVER_CONFIG['host']}:{SERVER_CONFIG['port']}")
+    _logger.info(f"📖 Swagger文档：http://localhost:{SERVER_CONFIG['port']}/docs")
+    _logger.info("=" * 60)
 
 @app.on_event("shutdown")
 async def on_shutdown():
     """服务关闭时释放资源"""
-    print("🛑 正在关闭服务...")
+    _logger.info("🛑 正在关闭服务...")
     try:
         await GraphService.get_instance().close()
-        print("✅ GraphAgent MySQL 连接已关闭")
+        _logger.info("✅ GraphAgent MySQL 连接已关闭")
     except Exception as exc:
-        print(f"⚠️  关闭 GraphAgent 时出错：{exc}")
-
+        _logger.error(f"⚠️  关闭 GraphAgent 时出错：{exc}")
 
 # ====================================================================
 # 3. 注册路由（具体接口实现见 controllers/）
@@ -107,7 +110,6 @@ register_routers(app)
 
 # SPA fallback 路由必须最后注册，所以前端托管放在所有 API 路由之后
 mount_frontend(app)
-
 
 # ====================================================================
 # 4. 直接 `python main.py` 也能启动（不用记 uvicorn 命令）
@@ -120,4 +122,5 @@ if __name__ == "__main__":
         port=SERVER_CONFIG["port"],
         reload=False,    # 生产环境关掉 reload
         log_level="info",
+        log_config=None,  # 用顶部的统一日志配置，避免 uvicorn 覆盖后日志绕过 app.log
     )
