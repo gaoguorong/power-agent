@@ -140,13 +140,19 @@ const maxRows = computed(() =>
 
 // --- 小工具 ---
 function renderTextAsHtml(text: string) {
-  // 轻量文本处理：< & > 转义 + 识别换行，其他不做（防止 XSS，工具结果里的表格/JSON 用 ToolOutputView 处理）
+  // 轻量文本处理：< & > 转义 + 识别换行，识别 /charts/ 图片URL渲染为 <img>
   const esc = (s: string) =>
     s
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-  return esc(text || '').replace(/\n/g, '<br>')
+  const escaped = esc(text || '')
+  // 将文本中的 /charts/*.png URL 转换为 <img>（支持行内出现，渲染为块级图片）
+  const withImgs = escaped.replace(
+    /\/charts\/[A-Za-z0-9_\-]+\.png/g,
+    (url) => `<img src="${url}" alt="调整对比图" style="display:block;max-width:100%;border-radius:8px;margin:8px 0;" />`
+  )
+  return withImgs.replace(/\n/g, '<br>')
 }
 function stringify(obj: any) {
   try {

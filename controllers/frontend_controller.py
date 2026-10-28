@@ -13,6 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 # 项目根目录下的前端构建产物
 _FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+# 动态生成的图表（负荷/新能源调整前后对比图等）
+_CHARTS_DIR = Path(__file__).resolve().parents[1] / "charts"
 
 
 def mount_frontend(app: FastAPI) -> None:
@@ -25,6 +27,10 @@ def mount_frontend(app: FastAPI) -> None:
     _assets_dir = _FRONTEND_DIST / "assets"
     if _assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend_assets")
+
+    # 动态生成的图表目录（如负荷调整前后对比曲线）
+    _CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/charts", StaticFiles(directory=str(_CHARTS_DIR)), name="generated_charts")
 
     # /favicon.svg 单独处理
     if (_FRONTEND_DIST / "favicon.svg").exists():
@@ -40,6 +46,8 @@ def mount_frontend(app: FastAPI) -> None:
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         if full_path.startswith("api/") or full_path == "api":
+            raise HTTPException(status_code=404)
+        if full_path.startswith("charts/") or full_path == "charts":
             raise HTTPException(status_code=404)
         # 先尝试当作真实文件返回（assets下的文件走上面mount的路由，这里只会命中 dist 根目录里的其他文件）
         candidate = _FRONTEND_DIST / full_path

@@ -16,10 +16,14 @@ class SkillDef(dict):
 
     def _matches_intent(self, question: str, relax_pre_action: bool = False) -> bool:
         """对象词(triggers) 与 动作词(action_triggers) 同时命中才算意图匹配。
+        若配置了 exclude_keywords 且命中任一，则直接返回 False（用于 LASCH 等高级路径抢占）。
         """
         if not question:
             return False
         q = question.lower()
+        excludes = self.get("exclude_keywords", []) or []
+        if any(w.lower() in q for w in excludes):
+            return False
         objs = self.get("triggers", []) or []
         acts = self.get("action_triggers", []) or []
         pre_acts = self.get("pre_action_triggers", []) or []

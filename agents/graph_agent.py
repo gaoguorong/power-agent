@@ -43,6 +43,55 @@ def _interrupt(value, config: RunnableConfig):
 _llm_logger = logging.getLogger("llm_io")
 
 
+def _sanitize_tool_call_history(messages):
+    """清理消息历史中不合规的 tool_calls。
+
+    LLM API 要求：每条带 tool_calls 的 AIMessage 后面必须紧跟对应
+    tool_call_id 的 ToolMessage。如果历史里存在：
+      1) 有 tool_calls 但缺 ToolMessage 的 AIMessage；
+      2) ToolMessage 存在但没有紧跟在对应 AIMessage 后面；
+    都会触发 'insufficient tool messages following tool_calls message' 400 错误。
+
+    本函数扫描历史，对每条带 tool_calls 的 AIMessage：
+      - 检查其紧随其后的消息是否是 ToolMessage；
+      - 收集所有 ToolMessage 的 tool_call_id；
+      - 只保留那些 id 存在且紧随其后有对应 ToolMessage 的 tool_call。
+    其余 tool_call 全部剔除，保证历史可被 LLM API 接受。
+    """
+    seen_tool_call_ids = set()
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            cid = getattr(m, "tool_call_id", None)
+            if cid:
+                seen_tool_call_ids.add(cid)
+
+    changed = False
+    for idx, m in enumerate(messages):
+        if not isinstance(m, AIMessage):
+            continue
+        tcs = getattr(m, "tool_calls", None) or []
+        if not tcs:
+            continue
+
+        next_msg = messages[idx + 1] if idx + 1 < len(messages) else None
+        next_is_tool = isinstance(next_msg, ToolMessage)
+
+        if not next_is_tool:
+            m.tool_calls = []
+            changed = True
+            continue
+
+        valid = [
+            tc for tc in tcs
+            if tc.get("id") in seen_tool_call_ids
+            and getattr(next_msg, "tool_call_id", None) == tc.get("id")
+        ]
+        if len(valid) != len(tcs):
+            m.tool_calls = valid
+            changed = True
+    return changed
+
+
 class GraphAgent:
 
     @staticmethod
@@ -114,7 +163,11 @@ class GraphAgent:
             self._mysql_conn = None
 
     def agent_node(self, state: AgentState):
-        messages_with_sys = [("system", SYSTEM_PROMPT)] + state["messages"]
+        messages = list(state["messages"])
+        if _sanitize_tool_call_history(messages):
+            _llm_logger.warning("[历史修复] session=%s 检测到孤立 tool_calls 并已清理",
+                                state.get("session_id", "default"))
+        messages_with_sys = [("system", SYSTEM_PROMPT)] + messages
         sid = state.get("session_id", "default")
         latest_message = state["messages"][-1] if state["messages"] else None
         latest_text = str(getattr(latest_message, "content", ""))
@@ -159,7 +212,9 @@ class GraphAgent:
                 # 拒绝：把 tool_calls 清掉，回 agent 让 AI 换个方案
                 last_msg.tool_calls = []
                 last_msg.content = "用户拒绝了该操作，请重新考虑方案。"
-        return {"messages": state["messages"]}
+        # 只返回被修改的 last_msg，让 add_messages 按 id 原地更新，
+        # 避免回传整份 state["messages"] 触发重复追加或顺序错乱。
+        return {"messages": [last_msg]}
 
     def should_continue(self, state: AgentState):
         last_msg = state["messages"][-1]
