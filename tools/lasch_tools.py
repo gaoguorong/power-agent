@@ -151,7 +151,9 @@ def lasch_submit_workflow(
     【参数】
         time_window_start: 分析窗口开始时间，如 "2025-10-03 12:00:00"
         time_window_end:   分析窗口结束时间，如 "2025-10-03 16:00:00"
-        scenario_count:    生成场景数（默认3，本机内存有限建议≤3）
+        scenario_count:    生成场景数（默认3，本机内存有限建议≤3）。
+                           仅在 scenario_only / scenario_then_optimize 模式下生效；
+                           optimize_baseline 模式下会被忽略，不要传。
         mode:              scenario_only(只生成场景) / optimize_baseline(只优化基线) /
                            scenario_then_optimize(场景生成+优化全流程，默认)
         step_min:          时间步长（分钟），默认15
@@ -248,8 +250,9 @@ def lasch_submit_workflow(
     body: Dict = {
         "mode": mode,
         "requirement": requirement,
-        "scenario_control": {"scenario_count": scenario_count, "seed": 20},
     }
+    if mode != "optimize_baseline":
+        body["scenario_control"] = {"scenario_count": scenario_count, "seed": 20}
     status, data = _http("POST", "/api/v1/workflows", body=body)
     if status == 202:
         result = {
@@ -435,17 +438,26 @@ def lasch_get_workflow_result(workflow_id: str, session_id: str = "default") -> 
         optimization_result = data.get("optimization_result") or {}
         mode = data.get("mode")
         is_scenario_only = mode == "scenario_only"
+        is_optimize_baseline = mode == "optimize_baseline"
+
+        calculation_window = optimization_result.get("calculation_window") or scenario_result.get("calculation_window")
 
         summary = {
             "success": True,
             "workflow_id": workflow_id,
             "mode": mode,
-            "scenario_count": scenario_result.get("scenario_count"),
-            "scenario_status": scenario_result.get("status"),
             "optimization_status": optimization_result.get("status"),
-            "generator": (scenario_result.get("generator") or {}).get("model_version"),
-            "calculation_window": scenario_result.get("calculation_window"),
+            "calculation_window": calculation_window,
         }
+
+        if is_optimize_baseline:
+            summary["scenario_count"] = optimization_result.get("scenario_count", 1)
+            summary["scenario_status"] = "not_applicable"
+            summary["result_aggregation"] = optimization_result.get("result_aggregation", "single_scenario")
+        else:
+            summary["scenario_count"] = scenario_result.get("scenario_count")
+            summary["scenario_status"] = scenario_result.get("status")
+            summary["generator"] = (scenario_result.get("generator") or {}).get("model_version")
 
         base_forecast = scenario_result.get("base_forecast")
         adjustment_chart = None
@@ -465,14 +477,20 @@ def lasch_get_workflow_result(workflow_id: str, session_id: str = "default") -> 
                 else f"场景生成失败: {scenario_result.get('message', '未知错误')}"
             )
         elif optimization_result.get("status") == "success":
-            base_msg = "前瞻调度分析完成，场景生成与优化均成功"
+            if is_optimize_baseline:
+                base_msg = "前瞻调度分析完成（optimize_baseline 模式，基于基准预测值直接优化，未生成场景）"
+            else:
+                base_msg = "前瞻调度分析完成，场景生成与优化均成功"
             if adjustment_chart:
                 base_msg += f"\n本次涉及负荷/新能源调整，已生成对比图：{adjustment_chart}\n请在回答正文中独占一行原样输出该图片URL（不要加任何前缀文字），前端会自动渲染为图片。"
             else:
                 base_msg += "\n本次未涉及负荷/新能源功率调整，无对比图，不要在回答中输出任何 /charts/ 图片URL。"
             summary["message"] = base_msg
         elif optimization_result.get("status") == "failed":
-            summary["message"] = f"场景生成成功但优化失败: {optimization_result.get('message', '未知错误')}"
+            if is_optimize_baseline:
+                summary["message"] = f"基线优化失败: {optimization_result.get('message', '未知错误')}"
+            else:
+                summary["message"] = f"场景生成成功但优化失败: {optimization_result.get('message', '未知错误')}"
         else:
             summary["message"] = "前瞻调度结果已返回"
 
@@ -775,6 +793,7 @@ LASCH_TOOLS = [
     lasch_wait_workflow,
     lasch_get_workflow_result,
     lasch_query_status,
+
     lasch_submit_section_control,
     lasch_wait_section_control,
     lasch_get_section_control_result,
